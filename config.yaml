@@ -1,0 +1,162 @@
+# ============================================================
+# Job Site Safety Copilot — Tier 1 Configuration
+# ============================================================
+
+perspective: "egocentric"       # "third_person" | "egocentric"
+
+# --- Model Paths & Thresholds ---
+models:
+  general:
+    path: null                  # Disabled: Rely entirely on consolidated model below
+    confidence: 0.40
+    iou: 0.50
+    classes: null               # null = all COCO classes; list IDs to filter
+  ppe:
+    # Pretrained PPE model:
+    # 1. Roboflow ID: "ppe-detection-qlq3d/1" (Requires api_key)
+    # 2. Hugging Face: "hf:yihong1120/Construction-Hazard-Detection:models/yolo26/pt/yolo26n.pt" (Zero setup)
+    path: "hf:yihong1120/Construction-Hazard-Detection:models/yolo26/pt/yolo26n.pt"
+    api_key: "N3msO9LsV6MgzZpFDe0D" # Required if path is a Roboflow model ID
+    confidence: 0.35
+    iou: 0.45
+  pose:
+    path: "yolo26n-pose.pt"     # COCO keypoints (auto-downloads)
+    confidence: 0.40
+    run_every_n_frames: 3       # Pose runs every Nth frame to save compute
+  tool:
+    enabled: true
+    path: "yolov8s-worldv2.pt"
+    confidence: 0.25
+    iou: 0.45
+    classes:
+      - "hammer"
+      - "drill"
+      - "saw"
+      - "measuring tape"
+  depth:
+    enabled: true
+    path: "depth-anything/Depth-Anything-V2-Small-hf"
+    confidence: 0.40
+    run_every_n_frames: 3
+    scale_factor: 15.0
+
+# --- Compute Device ---
+device:
+  preferred: "auto"             # auto | mps | cpu
+                                # auto = try MPS first, fall back to CPU
+                                # On macOS 26 Tahoe: MPS smoke test catches regression
+
+# --- Video Capture ---
+capture:
+  webcam_id: 0
+  resolution: [1280, 720]
+  max_fps: 30
+
+# --- Multi-Object Tracking ---
+tracking:
+  tracker: "models/botsort_reid.yaml"    # BoT-SORT + ReID for persistent IDs
+  persist: true                 # Maintain IDs across frames
+
+# --- Attention / Escalation Logic (the novel piece) ---
+escalation:
+  dwell_threshold_seconds: 4.0           # Time before escalation begins
+  gaze_angle_tolerance_degrees: 45.0     # ±degrees from hazard bearing to count as "looking"
+  escalation_cooldown_seconds: 10.0      # Don't re-escalate same hazard within this window
+  acknowledgment_gaze_duration_seconds: 0.5  # Must look for this long to count as acknowledged
+
+# --- Fall Detection ---
+fall_detection:
+  body_angle_threshold_degrees: 30.0     # Below this = horizontal posture
+  velocity_threshold_px_per_frame: 15.0  # Rapid vertical drop
+  confirmation_frames: 2                 # Both signals must agree for N frames
+  alert_cooldown_seconds: 15.0           # Don't re-alert same person within this window
+
+# --- PPE ---
+ppe:
+  standalone_alert: false       # PPE state NEVER triggers alerts alone
+                                # It only modulates severity of other hazards
+
+# --- Voice Alerts (TTS) ---
+alerts:
+  enabled: true
+  voice: "Samantha"             # macOS system voice (run `say -v ?` to list)
+  rates:
+    calm: 160                   # Words per minute by severity
+    normal: 180
+    urgent: 220
+    critical: 240
+  cooldown_seconds: 5.0         # Min gap between repeated alerts for same hazard
+  max_concurrent: 1             # Max simultaneous TTS processes
+
+# --- Event Logging ---
+logging:
+  database_path: "data/events.db"
+  log_level: "INFO"             # DEBUG | INFO | WARNING | ERROR
+
+# --- VLM Integration (Part 2) ---
+vlm:
+  enabled: true
+  api_url: "http://localhost:11434/api/chat"
+  model: "gemma4:cloud"           # Local multimodal reasoning model
+  api_key: null                 # Optional API Key/Token for cloud endpoints (e.g. OpenRouter, Groq, custom proxy)
+  background_polling: true
+  fps: 0.25                     # Tier 2 runs every ~4s or on state change, not every frame
+  prediction_alert_threshold: 0.65
+  system_prompt: >
+    You are a construction-site reasoning assistant.
+    Prefer the structured scene graph and session memory over free-form guessing.
+    If retrieved documents are provided, ground answers in them and label any inference beyond them.
+  reasoning:
+    reason_every_seconds: 4.0
+    state_change_cooldown_seconds: 1.5
+    memory_items: 200
+    checklist_hold_frames: 6
+    expected_items: []
+    scene_graph:
+      tool_labels: ["cell_phone", "drill", "hammer", "saw", "measuring_tape", "tool"]
+      structure_labels: ["scaffold", "beam", "column", "wall", "door", "window", "ladder"]
+    documents:
+      directory: "data/documents"
+      index_path: "data/indexes/documents_index.json"
+      embedding_model: "nomic-embed-text"
+      embed_api_url: "http://localhost:11434/api/embed"
+      force_embeddings: false
+      direct_doc_limit: 6
+      direct_char_limit: 48000
+      top_k: 4
+    blueprints:
+      directory: "data/blueprints"
+      render_directory: "data/blueprints/rendered"
+      max_pdf_pages: 2
+    spatial_memory:
+      grid_rows: 3
+      grid_cols: 3
+      history_limit: 200
+
+# --- Display / Overlay ---
+display:
+  show_fps: true
+  show_keypoints: true
+  show_gaze_lines: true
+  show_zones: true
+  show_alert_banner: true
+  show_track_ids: true
+  window_name: "Safety Copilot"
+  bbox_colors:                  # BGR format for OpenCV
+    person: [0, 255, 0]        # Green
+    vehicle: [0, 255, 255]     # Yellow
+    ppe_ok: [0, 200, 0]        # Dark green
+    ppe_missing: [0, 0, 255]   # Red
+    hazard: [0, 0, 255]        # Red
+    zone: [0, 165, 255]        # Orange
+  zone_alpha: 0.25              # Transparency for zone overlays
+
+# --- Danger Zones ---
+# Zones can also be loaded from JSON files in data/zones/
+zones:
+  default: []
+  # Example zone definition:
+  # - name: "Electrical Panel"
+  #   zone_type: "electrical"
+  #   polygon: [[100, 200], [300, 200], [300, 400], [100, 400]]
+  #   severity_base: "danger"

@@ -1,0 +1,11 @@
+# Job Site Safety Copilot — Tier 1 Dependencies
+# Python 3.11+ required
+
+ultralytics>=8.4.0          # YOLO26 detection + tracking + pose
+torch>=2.3.0                # PyTorch with MPS backend for Apple Silicon
+opencv-python>=4.9.0        # Video capture, display, image processing
+numpy>=1.26.0               # Array operations
+pyyaml>=6.0                 # Configuration file parsing
+networkx>=3.3              # Tier 2 semantic scene graph
+pypdf>=5.0.0               # Construction document / blueprint PDF text extraction
+PyMuPDF>=1.26.0            # Optional blueprint PDF page rendering for Gemma vision
