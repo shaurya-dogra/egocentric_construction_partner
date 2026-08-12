@@ -54,7 +54,7 @@ capture:
 
 # --- Multi-Object Tracking ---
 tracking:
-  tracker: "models/botsort_reid.yaml"    # BoT-SORT + ReID for persistent IDs
+  tracker: "bytetrack.yaml"              # ByteTrack for high-speed tracking (no ReID model overhead)
   persist: true                 # Maintain IDs across frames
 
 # --- Attention / Escalation Logic (the novel piece) ---
@@ -96,12 +96,23 @@ logging:
 # --- VLM Integration (Part 2) ---
 vlm:
   enabled: true
+  backend: "fastvlm"            # "ollama" | "moondream" | "fastvlm" — which VLM engine to use
   api_url: "http://localhost:11434/api/chat"
-  model: "gemma4:cloud"           # Local multimodal reasoning model
+  model: "gemma4:cloud"           # Local multimodal reasoning model (used when backend=ollama)
   api_key: null                 # Optional API Key/Token for cloud endpoints (e.g. OpenRouter, Groq, custom proxy)
-  background_polling: true
-  fps: 0.25                     # Tier 2 runs every ~4s or on state change, not every frame
+  background_polling: false   # Set to false to avoid MPS GPU starvation on Apple Silicon (VLM available on-demand)
   prediction_alert_threshold: 0.65
+  moondream:                      # Settings for the on-device Moondream2 backend
+    model_id: "vikhyatk/moondream2"
+    revision: null                # Pin a specific revision e.g. "2025-06-21" for reproducibility
+    device: "auto"                # auto | mps | cpu | cuda
+    dtype: "float16"              # float16 | float32 (bfloat16 not supported on MPS)
+    max_image_size: 448           # Max dimension for input images sent to Moondream
+  fastvlm:                        # Settings for the on-device FastVLM backend
+    model_id: "apple/FastVLM-0.5B"
+    device: "auto"                # auto | mps | cpu | cuda
+    dtype: "float16"              # float16 | float32
+    max_image_size: 448           # Max dimension for input images sent to FastVLM
   system_prompt: >
     You are a construction-site reasoning assistant.
     Prefer the structured scene graph and session memory over free-form guessing.

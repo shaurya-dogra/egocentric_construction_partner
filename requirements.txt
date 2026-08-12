@@ -9,3 +9,8 @@ pyyaml>=6.0                 # Configuration file parsing
 networkx>=3.3              # Tier 2 semantic scene graph
 pypdf>=5.0.0               # Construction document / blueprint PDF text extraction
 PyMuPDF>=1.26.0            # Optional blueprint PDF page rendering for Gemma vision
+transformers<5.0.0         # Moondream2 + Depth Anything + FastVLM model loading (pinned to avoid 5.x breaking changes)
+accelerate>=1.0.0           # Required by transformers for device_map support
+Pillow>=10.0.0              # Image conversion for VLM input
+timm>=1.0.0                 # Required by FastVLM-0.5B vision architecture
+

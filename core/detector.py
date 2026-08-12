@@ -115,6 +115,7 @@ class Detector:
         self._tool_conf = tool_conf
         self._tool_iou = tool_iou
         self._tool_classes = tool_classes or []
+        self._cached_tool_detections: list[Detection] = []  # Cache for frame-skipped tool detection
 
         # ── Load general (COCO) model ─────────────────────────
         self._general_model = None
@@ -234,7 +235,7 @@ class Detector:
         return self._deduplicate(detections)
 
     def detect_and_track(self, frame: np.ndarray) -> list[Detection]:
-        """Run models with tracking enabled where supported."""
+        """Run detection/PPE models with tracking enabled. Tool detection excluded (run separately)."""
         detections: list[Detection] = []
 
         if self._general_model is None:
@@ -255,20 +256,58 @@ class Detector:
             detections.extend(self._run_general_tracked(frame))
             detections.extend(self._run_ppe(frame))
 
-        # Run tool tracking if active
-        if self._tool_model is not None:
-            tool_results = self._tool_model.track(
-                source=frame,
-                device=self._device,
-                conf=self._tool_conf,
-                iou=self._tool_iou,
-                verbose=False,
-                persist=True,
-                tracker=self._tracker_config,
-            )
-            detections.extend(self._parse_tool_results(tool_results, with_tracking=True))
-
         return self._deduplicate(detections)
+
+    def detect_tools(
+        self,
+        frame: np.ndarray,
+        frame_number: int,
+        run_every_n: int = 3,
+        downscale: bool = True,
+    ) -> list[Detection]:
+        """Run YOLO-World tool detection with frame-skip caching.
+
+        Separated from detect_and_track so it can run in parallel.
+        Uses downscaled input for speed since tools are large objects.
+        """
+        if self._tool_model is None:
+            return []
+
+        # Frame skip: return cached results on non-inference frames
+        if frame_number % run_every_n != 0:
+            return list(self._cached_tool_detections)
+
+        # Optionally downscale for faster inference
+        inference_frame = frame
+        scale_x, scale_y = 1.0, 1.0
+        if downscale:
+            h, w = frame.shape[:2]
+            target_w, target_h = 640, 360
+            if w > target_w or h > target_h:
+                inference_frame = cv2.resize(frame, (target_w, target_h))
+                scale_x = w / target_w
+                scale_y = h / target_h
+
+        tool_results = self._tool_model.predict(
+            source=inference_frame,
+            device=self._device,
+            conf=self._tool_conf,
+            iou=self._tool_iou,
+            verbose=False,
+        )
+        detections = self._parse_tool_results(tool_results, with_tracking=False)
+
+        # Scale bboxes back to original resolution
+        if downscale and (scale_x != 1.0 or scale_y != 1.0):
+            for det in detections:
+                x1, y1, x2, y2 = det.bbox
+                det.bbox = (
+                    int(x1 * scale_x), int(y1 * scale_y),
+                    int(x2 * scale_x), int(y2 * scale_y),
+                )
+
+        self._cached_tool_detections = detections
+        return list(detections)
 
     def _parse_consolidated_results(
         self, results, *, with_tracking: bool = False

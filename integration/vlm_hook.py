@@ -1,4 +1,4 @@
-"""Tier 2 reasoning hook backed by local Ollama Gemma 4."""
+"""Tier 2 reasoning hook backed by local Ollama Gemma 4 or on-device Moondream2."""
 
 from __future__ import annotations
 
@@ -54,6 +54,21 @@ class VLMHook:
         self._hazard_cache: dict[str, float] = {}
         self._disabled_until = 0.0
         self._disable_seconds = float(config.get("error_backoff_seconds", 30.0))
+
+        # ── Backend Selection: "ollama" (default), "moondream", or "fastvlm" ──
+        self.backend = config.get("backend", "ollama")
+        self._moondream: Optional["MoondreamEngine"] = None
+        self._fastvlm: Optional["FastVlmEngine"] = None
+        if self.backend == "moondream" and self._available:
+            from integration.moondream_engine import MoondreamEngine
+            moondream_cfg = config.get("moondream", {})
+            self._moondream = MoondreamEngine(moondream_cfg)
+            logger.info("VLM backend set to Moondream2 (on-device).")
+        elif self.backend == "fastvlm" and self._available:
+            from integration.fastvlm_engine import FastVlmEngine
+            fastvlm_cfg = config.get("fastvlm", {})
+            self._fastvlm = FastVlmEngine(fastvlm_cfg)
+            logger.info("VLM backend set to FastVLM (on-device).")
 
         self.tools = [
             {
@@ -147,6 +162,14 @@ class VLMHook:
             if fast_answer:
                 return fast_answer
 
+        # ── Moondream2 backend ───────────────────────────────
+        if self.backend == "moondream" and self._moondream is not None and frame is not None:
+            return self._moondream_ask_question(prompt, frame, snapshot)
+
+        # ── FastVLM backend ──────────────────────────────────
+        if self.backend == "fastvlm" and self._fastvlm is not None and frame is not None:
+            return self._fastvlm_ask_question(prompt, frame, snapshot)
+
         retrieval_context = self.reasoning.retrieval_context(prompt)
         blueprint_context = self.reasoning.blueprint_context()
         images: list[str] = []
@@ -194,6 +217,14 @@ class VLMHook:
             return None
         self._hazard_cache[hazard.hazard_id] = now
 
+        # ── Moondream2 backend ───────────────────────────────
+        if self.backend == "moondream" and self._moondream is not None and frame is not None:
+            return self._moondream_escalate(frame, hazard)
+
+        # ── FastVLM backend ──────────────────────────────────
+        if self.backend == "fastvlm" and self._fastvlm is not None and frame is not None:
+            return self._fastvlm_escalate(frame, hazard)
+
         snapshot = self._snapshot_for(frame_result, frame)
         retrieval_context = self.reasoning.retrieval_context(hazard.description)
         crop = self._crop_hazard(frame, getattr(hazard, "hazard_bbox", None))
@@ -238,6 +269,17 @@ class VLMHook:
             frame = payload.get("frame")
             if not snapshot:
                 continue
+
+            # ── Moondream2 backend (background reasoning) ────
+            if self.backend == "moondream" and self._moondream is not None and frame is not None:
+                self._moondream_background_reasoning(frame, snapshot, detections)
+                continue
+
+            # ── FastVLM backend (background reasoning) ────────
+            if self.backend == "fastvlm" and self._fastvlm is not None and frame is not None:
+                self._fastvlm_background_reasoning(frame, snapshot, detections)
+                continue
+
             messages = [
                 {"role": "system", "content": self.system_prompt},
                 {
@@ -320,6 +362,240 @@ class VLMHook:
                 self._disabled_until = 0.0
             except Exception as exc:
                 self._pause_after_error(exc, "Tier 2 background reasoning error")
+
+    # ── Moondream2 dispatch methods ────────────────────────────
+
+    def _moondream_ask_question(
+        self,
+        prompt: str,
+        frame: np.ndarray,
+        snapshot: Optional[ReasoningSnapshot],
+    ) -> str:
+        """Answer a user question using the on-device Moondream2 model."""
+        assert self._moondream is not None
+        # Build context-enriched question
+        context_parts = [prompt]
+        if snapshot:
+            graph_summary = json.dumps(snapshot.to_dict().get("scene_graph", {}), default=str)
+            context_parts.append(f"Scene context: {graph_summary[:800]}")
+        enriched = " ".join(context_parts)
+        return self._moondream.query(frame, enriched)
+
+    def _moondream_escalate(
+        self,
+        frame: np.ndarray,
+        hazard: Any,
+    ) -> Optional[str]:
+        """Verify an escalated hazard using Moondream2 visual analysis."""
+        assert self._moondream is not None
+        question = (
+            f"A safety system detected: {hazard.description}. "
+            f"Hazard type: {hazard.hazard_type}, severity: {hazard.severity.value}. "
+            f"Look at the image and verify: is this a real safety risk? "
+            f"Respond with one concise sentence confirming or denying the hazard."
+        )
+        # Use a crop if we have a bounding box, otherwise the full frame
+        bbox = getattr(hazard, "hazard_bbox", None)
+        target_frame = frame
+        if bbox is not None:
+            crop = self._crop_hazard(frame, bbox)
+            if crop is not None and crop.size > 0:
+                target_frame = crop
+        try:
+            return self._moondream.query(target_frame, question)
+        except Exception as exc:
+            logger.error("Moondream2 escalation failed: %s", exc)
+            return None
+
+    def _moondream_background_reasoning(
+        self,
+        frame: np.ndarray,
+        snapshot: dict[str, Any],
+        detections: list[Any],
+    ) -> None:
+        """Run background scene reasoning using Moondream2 and produce prediction alerts."""
+        assert self._moondream is not None
+        try:
+            logger.info("ENGAGING MOONDREAM2: Running on-device scene reasoning...")
+
+            # Step 1: Get a scene description
+            scene_desc = self._moondream.describe_scene(frame)
+            logger.info(
+                "================ MOONDREAM2 SCENE ================\n%s\n==================================================",
+                scene_desc,
+            )
+
+            # Step 2: Ask targeted safety questions to extract structured predictions
+            safety_q = (
+                "List any safety hazards or risks you see in this construction scene. "
+                "For each hazard, provide: what the hazard is, how confident you are (0.0 to 1.0), "
+                "and why it is dangerous. Do NOT mention PPE, hardhats, vests, or protective equipment. "
+                "Focus on proximity dangers, fall risks, equipment misuse, and environmental hazards."
+            )
+            safety_answer = self._moondream.query(frame, safety_q)
+            logger.info(
+                "================ MOONDREAM2 SAFETY ================\n%s\n==================================================",
+                safety_answer,
+            )
+
+            # Step 3: Try to extract prediction-like insights from the free-text answer
+            # Moondream2 outputs free text, so we parse heuristically
+            predictions = self._parse_moondream_predictions(safety_answer)
+            for prediction in predictions:
+                confidence = prediction.get("confidence", 0.0)
+                if confidence >= float(self.config.get("prediction_alert_threshold", 0.65)):
+                    self.insight_queue.put(
+                        {
+                            "kind": "prediction",
+                            "label": prediction.get("label", "predicted_hazard"),
+                            "confidence": confidence,
+                            "reason": prediction.get("reason", ""),
+                        }
+                    )
+            self._disabled_until = 0.0
+        except Exception as exc:
+            self._pause_after_error(exc, "Moondream2 background reasoning error")
+
+    # ── FastVLM dispatch methods ──────────────────────────────
+
+    def _fastvlm_ask_question(
+        self,
+        prompt: str,
+        frame: np.ndarray,
+        snapshot: Optional[ReasoningSnapshot],
+    ) -> str:
+        """Answer a user question using the on-device FastVLM model."""
+        assert self._fastvlm is not None
+        # Build context-enriched question
+        context_parts = [prompt]
+        if snapshot:
+            graph_summary = json.dumps(snapshot.to_dict().get("scene_graph", {}), default=str)
+            context_parts.append(f"Scene context: {graph_summary[:800]}")
+        enriched = " ".join(context_parts)
+        return self._fastvlm.query(frame, enriched)
+
+    def _fastvlm_escalate(
+        self,
+        frame: np.ndarray,
+        hazard: Any,
+    ) -> Optional[str]:
+        """Verify an escalated hazard using FastVLM visual analysis."""
+        assert self._fastvlm is not None
+        question = (
+            f"A safety system detected: {hazard.description}. "
+            f"Hazard type: {hazard.hazard_type}, severity: {hazard.severity.value}. "
+            f"Look at the image and verify: is this a real safety risk? "
+            f"Respond with one concise sentence confirming or denying the hazard."
+        )
+        # Use a crop if we have a bounding box, otherwise the full frame
+        bbox = getattr(hazard, "hazard_bbox", None)
+        target_frame = frame
+        if bbox is not None:
+            crop = self._crop_hazard(frame, bbox)
+            if crop is not None and crop.size > 0:
+                target_frame = crop
+        try:
+            return self._fastvlm.query(target_frame, question)
+        except Exception as exc:
+            logger.error("FastVLM escalation failed: %s", exc)
+            return None
+
+    def _fastvlm_background_reasoning(
+        self,
+        frame: np.ndarray,
+        snapshot: dict[str, Any],
+        detections: list[Any],
+    ) -> None:
+        """Run background scene reasoning using FastVLM and produce prediction alerts."""
+        assert self._fastvlm is not None
+        try:
+            logger.info("ENGAGING FASTVLM: Running on-device scene reasoning...")
+
+            # Step 1: Get a scene description
+            scene_desc = self._fastvlm.describe_scene(frame)
+            logger.info(
+                "================ FASTVLM SCENE ================\n%s\n==================================================",
+                scene_desc,
+            )
+
+            # Step 2: Ask targeted safety questions to extract structured predictions
+            safety_q = (
+                "List any safety hazards or risks you see in this construction scene. "
+                "For each hazard, provide: what the hazard is, how confident you are (0.0 to 1.0), "
+                "and why it is dangerous. Do NOT mention PPE, hardhats, vests, or protective equipment. "
+                "Focus on proximity dangers, fall risks, equipment misuse, and environmental hazards."
+            )
+            safety_answer = self._fastvlm.query(frame, safety_q)
+            logger.info(
+                "================ FASTVLM SAFETY ================\n%s\n==================================================",
+                safety_answer,
+            )
+
+            # Step 3: Try to extract prediction-like insights from the free-text answer
+            predictions = self._parse_moondream_predictions(safety_answer)
+            for prediction in predictions:
+                confidence = prediction.get("confidence", 0.0)
+                if confidence >= float(self.config.get("prediction_alert_threshold", 0.65)):
+                    self.insight_queue.put(
+                        {
+                            "kind": "prediction",
+                            "label": prediction.get("label", "predicted_hazard"),
+                            "confidence": confidence,
+                            "reason": prediction.get("reason", ""),
+                        }
+                    )
+            self._disabled_until = 0.0
+        except Exception as exc:
+            self._pause_after_error(exc, "FastVLM background reasoning error")
+
+    @staticmethod
+    def _parse_moondream_predictions(text: str) -> list[dict[str, Any]]:
+        """Best-effort extraction of hazard predictions from Moondream2 free-text output.
+
+        Moondream2 doesn't produce structured JSON, so we extract sentences
+        that look like hazard descriptions and assign moderate confidence.
+        """
+        if not text or len(text.strip()) < 10:
+            return []
+
+        # Try JSON parse first (unlikely but possible)
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return parsed
+            if isinstance(parsed, dict) and "predictions" in parsed:
+                return parsed["predictions"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Heuristic: split into sentences, filter for safety-related ones
+        import re
+        sentences = re.split(r'[.!?\n]+', text)
+        hazard_keywords = {
+            "hazard", "danger", "risk", "unsafe", "fall", "collision", "struck",
+            "crush", "electr", "trip", "slip", "unstable", "overhead", "vehicle",
+            "machinery", "excavat", "scaffold", "ladder", "edge", "drop", "heavy",
+        }
+        ppe_keywords = {
+            "hardhat", "hard hat", "vest", "ppe", "helmet", "goggle", "glove",
+            "boot", "mask", "safety gear", "protective",
+        }
+        predictions: list[dict[str, Any]] = []
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if len(sentence) < 10:
+                continue
+            lower = sentence.lower()
+            # Skip PPE-related sentences
+            if any(kw in lower for kw in ppe_keywords):
+                continue
+            if any(kw in lower for kw in hazard_keywords):
+                predictions.append({
+                    "label": sentence[:80],
+                    "confidence": 0.55,
+                    "reason": sentence,
+                })
+        return predictions
 
     def _run_chat_loop(self, messages: list[dict], detections: Optional[list[Any]] = None) -> str:
         for _ in range(5):

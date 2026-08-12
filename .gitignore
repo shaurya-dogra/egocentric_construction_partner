@@ -60,3 +60,12 @@ data/documents/*
 *.njsproj
 *.sln
 *.swp
+
+# Environment variables & secrets
+.env
+.env.*
+
+# Test snapshots & scratch files
+*.jpg
+*.png
+scratch/

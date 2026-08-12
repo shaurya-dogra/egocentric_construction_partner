@@ -59,6 +59,7 @@ class FrameSource:
         self._is_webcam = False
         self._is_video = False
         self._is_image = False
+        self._is_stream = False
         self._opened = False
 
         # Threading
@@ -74,27 +75,32 @@ class FrameSource:
     # ── Source type detection ─────────────────────────────────
 
     def _detect_source_type(self) -> None:
-        """Classify the source as webcam, video, or image."""
+        """Classify the source as webcam, video, image, or network stream."""
         if isinstance(self._source, int):
             self._is_webcam = True
             logger.info("Source type: webcam (device %d)", self._source)
         elif isinstance(self._source, str):
-            ext = os.path.splitext(self._source)[1].lower()
-            if ext in _VIDEO_EXTS:
-                self._is_video = True
-                logger.info("Source type: video file (%s)", self._source)
-            elif ext in _IMAGE_EXTS:
-                self._is_image = True
-                logger.info("Source type: image file (%s)", self._source)
+            lower = self._source.lower()
+            if lower.startswith(("http://", "https://", "rtsp://")):
+                self._is_stream = True
+                logger.info("Source type: network stream (%s)", self._source)
             else:
-                # Best-effort: try as video
-                self._is_video = True
-                logger.warning(
-                    "Unknown extension '%s' — treating as video file", ext
-                )
+                ext = os.path.splitext(self._source)[1].lower()
+                if ext in _VIDEO_EXTS:
+                    self._is_video = True
+                    logger.info("Source type: video file (%s)", self._source)
+                elif ext in _IMAGE_EXTS:
+                    self._is_image = True
+                    logger.info("Source type: image file (%s)", self._source)
+                else:
+                    # Best-effort: try as video
+                    self._is_video = True
+                    logger.warning(
+                        "Unknown extension '%s' — treating as video file", ext
+                    )
         else:
             raise TypeError(
-                f"source must be int (webcam) or str (file path), "
+                f"source must be int (webcam) or str (file path/URL), "
                 f"got {type(self._source).__name__}"
             )
 
@@ -141,8 +147,15 @@ class FrameSource:
         )
 
     def _open_capture(self) -> None:
-        """Open a VideoCapture for webcam or video file."""
-        self._cap = cv2.VideoCapture(self._source)
+        """Open a VideoCapture for webcam, video file, or network stream."""
+        if self._is_stream:
+            # For MJPEG streams: use FFMPEG backend with low-latency flags
+            self._cap = cv2.VideoCapture(self._source, cv2.CAP_FFMPEG)
+            # Minimise internal buffering for lower latency
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        else:
+            self._cap = cv2.VideoCapture(self._source)
+
         if not self._cap.isOpened():
             raise IOError(f"Cannot open video source: {self._source}")
 
@@ -150,13 +163,19 @@ class FrameSource:
             target_w, target_h = self._resolution
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_w)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_h)
+        # Note: for streams, resolution is controlled by the server
 
         actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = self._cap.get(cv2.CAP_PROP_FPS) or 0.0
         total_frames = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        source_label = "webcam" if self._is_webcam else "video"
+        if self._is_stream:
+            source_label = "stream"
+        elif self._is_webcam:
+            source_label = "webcam"
+        else:
+            source_label = "video"
         logger.info(
             "%s opened: %dx%d @ %.1f FPS, total frames: %s",
             source_label.capitalize(),
@@ -246,7 +265,24 @@ class FrameSource:
 
         ret, frame = self._cap.read()
         if not ret:
-            if self._is_video:
+            if self._is_stream:
+                # Network stream: attempt reconnection
+                logger.warning("Stream read failed, reconnecting in 1s…")
+                time.sleep(1.0)
+                try:
+                    self._cap.release()
+                    self._cap = cv2.VideoCapture(
+                        self._source, cv2.CAP_FFMPEG
+                    )
+                    self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    if self._cap.isOpened():
+                        logger.info("Stream reconnected")
+                    else:
+                        logger.warning("Stream reconnect failed")
+                except Exception:
+                    logger.exception("Error during stream reconnect")
+                return
+            elif self._is_video:
                 logger.info("End of video file reached")
                 self._stop_event.set()
                 return
@@ -260,12 +296,19 @@ class FrameSource:
         frame_data = (frame, time.time(), self._frame_counter)
 
         try:
-            self._frame_queue.put(frame_data, timeout=0.5)
+            self._frame_queue.put_nowait(frame_data)
         except queue.Full:
-            # Drop frame — consumer is slower than producer
-            pass
+            # Queue full — drop oldest frame to ensure real-time live stream
+            try:
+                self._frame_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._frame_queue.put_nowait(frame_data)
+            except queue.Full:
+                pass
 
-        # Throttle video files to max_fps
+        # Throttle video files to max_fps (not streams — they self-throttle)
         if self._is_video and self._min_frame_interval > 0:
             elapsed = time.monotonic() - t_start
             sleep_time = self._min_frame_interval - elapsed

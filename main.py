@@ -13,6 +13,7 @@ import signal
 import sys
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # Suppress NumPy runtime warnings raised internally by the Ultralytics tracker during ReID matching
@@ -89,11 +90,19 @@ def load_config(config_path: str = "config.yaml") -> dict:
         "logging": {"database_path": "data/events.db", "log_level": "INFO"},
         "vlm": {
             "enabled": True,
+            "backend": "moondream",
             "api_url": "http://localhost:11434/api/chat",
             "model": "gemma4:cloud",
             "background_polling": True,
             "fps": 0.25,
             "prediction_alert_threshold": 0.65,
+            "moondream": {
+                "model_id": "vikhyatk/moondream2",
+                "revision": None,
+                "device": "auto",
+                "dtype": "float16",
+                "max_image_size": 448,
+            },
             "system_prompt": (
                 "You are a construction safety reasoning assistant. "
                 "Use scene graph state first, vision only when necessary, and mark predictions as predictions."
@@ -304,6 +313,9 @@ class SafetyCopilot:
         self._fps_frame_count = 0
         self._current_fps = 0.0
 
+        # ── Thread Pool for Parallel Inference ────────────────
+        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="model")
+
     def run(self, source, no_display: bool = False, no_voice: bool = False) -> None:
         """Run the main processing loop.
 
@@ -380,38 +392,50 @@ class SafetyCopilot:
             self.hazard_analyzer.resolution = (w, h)
             self.attention_tracker.resolution = (w, h)
 
-        # ── 1. Detection + Tracking ──────────────────────────
+        # ── 1. Detection + Tracking (main thread — tracker is stateful) ──
         detections = self.detector.detect_and_track(frame)
 
         # Update tracked objects from detections
         self._update_tracked_objects(detections, timestamp)
 
-        # ── 1b. Depth Estimation ─────────────────────────────
-        if self.depth_estimator.enabled:
-            if (
-                frame_number % self.depth_estimator.run_every_n == 0
-                or self._current_depth_map is None
-            ):
-                self._current_depth_map = self.depth_estimator.estimate(frame)
-
-            if self._current_depth_map is not None:
-                for obj in self._tracked_objects.values():
-                    if obj.is_active:
-                        obj.distance_meters = self.depth_estimator.get_distance(
-                            obj.bbox, self._current_depth_map
-                        )
-
-        # ── 2. Pose Estimation (every Nth frame) ─────────────
+        # ── 2. Submit parallel tasks for pose, depth, and tools ──
         person_tracks = {
             tid: obj
             for tid, obj in self._tracked_objects.items()
             if obj.class_name == "person" and obj.is_active
         }
-        poses = self.pose_estimator.estimate(
-            frame, frame_number, person_tracks
+
+        # Submit pose estimation (runs every Nth frame internally)
+        pose_future = self._executor.submit(
+            self.pose_estimator.estimate, frame, frame_number, person_tracks
         )
 
-        # ── 3. Hazard Analysis ───────────────────────────────
+        # Non-blocking async depth submission (every 10 frames)
+        if self.depth_estimator.enabled and frame_number % 10 == 0:
+            self.depth_estimator.submit_async(frame)
+
+        # Submit tool detection (every 4th frame, downscaled 640x360)
+        tool_future = self._executor.submit(
+            self.detector.detect_tools, frame, frame_number, 4, True
+        )
+
+        # ── 3. Gather parallel results ────────────────────────
+        poses = pose_future.result()
+
+        tool_detections = tool_future.result()
+        if tool_detections:
+            detections = self.detector._deduplicate(detections + tool_detections)
+
+        # Read latest async depth map (instant 0ms fetch)
+        latest_dmap = self.depth_estimator.get_latest_depth_map()
+        if self.depth_estimator.enabled and latest_dmap is not None:
+            for obj in self._tracked_objects.values():
+                if obj.is_active:
+                    obj.distance_meters = self.depth_estimator.get_distance(
+                        obj.bbox, latest_dmap
+                    )
+
+        # ── 4. Hazard Analysis ───────────────────────────────
         hazards, worker_ppe, machine_zones = self.hazard_analyzer.analyze(
             detections=detections,
             poses=poses,
@@ -580,6 +604,7 @@ class SafetyCopilot:
     def _cleanup(self, no_display: bool) -> None:
         """Clean up resources on shutdown."""
         logger.info("Cleaning up...")
+        self._executor.shutdown(wait=False)
         self.tts_engine.stop()
         self.event_logger.close()
         if not no_display:
@@ -665,10 +690,17 @@ def main() -> None:
     log_level = config["logging"].get("log_level", "INFO")
     logging.getLogger().setLevel(getattr(logging, log_level))
 
+    # Suppress verbose third-party library logging
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+
     # ── Resolve Source ───────────────────────────────────
     source = args.source
     if source.lower() == "webcam":
         source = config["capture"]["webcam_id"]
+    elif source.lower().startswith(("http://", "https://", "rtsp://")):
+        pass  # Network stream URL — pass through as string
     elif source.isdigit():
         source = int(source)
     # else: treat as file path
