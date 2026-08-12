@@ -367,9 +367,20 @@ escalation:
 
 vlm:
   enabled: true
-  backend: "fastvlm"                     # "fastvlm" | "moondream" | "ollama"
-  background_polling: false              # Run on-demand to prevent MPS GPU lockouts
+  backend: "gemini"             # "gemini" (Google AI Studio Free Tier) | "groq" | "ollama" | "fastvlm" | "moondream"
+  model: "gemini-2.0-flash"     # Free-tier fast multimodal model (or "gemini-1.5-flash")
+  background_polling: true      # Uses 0% local GPU over cloud REST, leaving 28.7 FPS for local vision
 ```
+
+### VLM Setup (Tier 2 Multimodal Reasoning)
+
+To use **Google Gemini 2.0 Flash** (Free Tier):
+
+1. Get a free API key from [Google AI Studio](https://aistudio.google.com/).
+2. Create a `.env` file in the root directory (automatically git-ignored):
+   ```bash
+   GEMINI_API_KEY=your_google_ai_studio_api_key
+   ```
 
 ---
 

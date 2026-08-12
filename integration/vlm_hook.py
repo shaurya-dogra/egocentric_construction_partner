@@ -55,11 +55,29 @@ class VLMHook:
         self._disabled_until = 0.0
         self._disable_seconds = float(config.get("error_backoff_seconds", 30.0))
 
-        # ── Backend Selection: "ollama" (default), "moondream", or "fastvlm" ──
-        self.backend = config.get("backend", "ollama")
-        self._moondream: Optional["MoondreamEngine"] = None
-        self._fastvlm: Optional["FastVlmEngine"] = None
-        if self.backend == "moondream" and self._available:
+        # ── Backend Selection: "gemini" (default), "groq", "ollama", "moondream", or "fastvlm" ──
+        self.backend = config.get("backend", "gemini")
+        if self.backend == "gemini":
+            self.api_url = config.get("api_url") or "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+            self.model = config.get("model") or "gemini-2.0-flash"
+            self.api_key = (
+                config.get("api_key")
+                or os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("GOOGLE_API_KEY")
+                or os.environ.get("VLM_API_KEY")
+                or os.environ.get("OPENAI_API_KEY")
+            )
+            logger.info("VLM backend set to Google Gemini API (model: %s).", self.model)
+        elif self.backend == "groq":
+            self.api_url = config.get("api_url") or "https://api.groq.com/openai/v1/chat/completions"
+            self.model = config.get("model") or "llama-3.2-11b-vision-preview"
+            self.api_key = (
+                config.get("api_key")
+                or os.environ.get("GROQ_API_KEY")
+                or os.environ.get("VLM_API_KEY")
+            )
+            logger.info("VLM backend set to Groq Cloud API (model: %s).", self.model)
+        elif self.backend == "moondream" and self._available:
             from integration.moondream_engine import MoondreamEngine
             moondream_cfg = config.get("moondream", {})
             self._moondream = MoondreamEngine(moondream_cfg)
