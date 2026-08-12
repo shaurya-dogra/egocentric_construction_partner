@@ -21,6 +21,10 @@ from core.models import Detection, FrameResult
 from reasoning import ReasoningCoordinator
 from reasoning.models import ReasoningSnapshot
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,6 +81,10 @@ class VLMHook:
                 or os.environ.get("VLM_API_KEY")
             )
             logger.info("VLM backend set to Groq Cloud API (model: %s).", self.model)
+        elif self.backend == "ollama":
+            self.api_url = config.get("api_url") or "http://localhost:11434/api/chat"
+            self.model = config.get("model") or "gemma4:cloud"
+            logger.info("VLM backend set to local Ollama (model: %s, url: %s).", self.model, self.api_url)
         elif self.backend == "moondream" and self._available:
             from integration.moondream_engine import MoondreamEngine
             moondream_cfg = config.get("moondream", {})
@@ -789,12 +797,21 @@ class VLMHook:
 
     def _pause_after_error(self, exc: Exception, prefix: str) -> None:
         self._disabled_until = time.time() + self._disable_seconds
-        logger.error(
-            "%s: %s. Pausing Tier 2 reasoning for %.0f seconds.",
-            prefix,
-            exc,
-            self._disable_seconds,
-        )
+        err_msg = str(exc)
+        if "400" in err_msg or "INVALID_ARGUMENT" in err_msg or not self.api_key:
+            logger.error(
+                "%s: %s.\n💡 HINT: Please set a valid GEMINI_API_KEY (starts with 'AIzaSy...') in your .env file or config.yaml.\nGet a free key from Google AI Studio: https://aistudio.google.com/app/apikey\nPausing Tier 2 reasoning for %.0f seconds.",
+                prefix,
+                exc,
+                self._disable_seconds,
+            )
+        else:
+            logger.error(
+                "%s: %s. Pausing Tier 2 reasoning for %.0f seconds.",
+                prefix,
+                exc,
+                self._disable_seconds,
+            )
 
     def _snapshot_for(
         self,

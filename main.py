@@ -24,6 +24,10 @@ warnings.filterwarnings("ignore", message=".*invalid value encountered in matmul
 import cv2
 import numpy as np
 import yaml
+from dotenv import load_dotenv
+
+# Load environment variables from .env if present
+load_dotenv()
 
 from core.device import get_device, log_device_info
 from core.models import (

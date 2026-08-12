@@ -96,11 +96,11 @@ logging:
 # --- VLM Integration (Part 2) ---
 vlm:
   enabled: true
-  backend: "gemini"             # "gemini" (Google AI Studio Free Tier) | "groq" | "ollama" | "fastvlm" | "moondream"
-  api_url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-  model: "gemini-2.0-flash"     # Free-tier fast multimodal model (or "gemini-1.5-flash")
-  api_key: null                 # Reads GEMINI_API_KEY / GOOGLE_API_KEY from environment or .env
-  background_polling: true      # Safe with Gemini API — uses 0% local GPU, leaving 28.7 FPS for vision
+  backend: "ollama"             # "ollama" (Local Ollama Gemma 4) | "gemini" | "groq" | "fastvlm" | "moondream"
+  api_url: "http://localhost:11434/api/chat"
+  model: "gemma4:cloud"           # Local Ollama multimodal reasoning model
+  api_key: null
+  background_polling: true      # Runs asynchronously via Ollama HTTP API without holding PyTorch GPU
   fps: 0.25                     # Scene reasoning every ~4s in background thread
   moondream:                      # Settings for the on-device Moondream2 backend
     model_id: "vikhyatk/moondream2"
