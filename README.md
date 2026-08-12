@@ -322,16 +322,19 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Starting the Pi Camera Stream (Optional)
+### Starting & Stopping the Pi Camera Stream
 
-On your Raspberry Pi 5 with camera connected:
+On your Raspberry Pi 5 with IMX219 camera connected:
 
 ```bash
-# Transfer pi_stream folder or run directly on Pi:
+# Start server on Pi
 cd pi_stream
 python3 stream_server.py
+
+# Stop server remotely from Mac terminal
+ssh raycon@10.236.6.195 "pkill -f stream_server.py"
 ```
-The server will output: `Stream: http://0.0.0.0:8554/stream`.
+The server stream endpoint: `http://10.236.6.195:8554/stream`.
 
 ---
 
@@ -367,20 +370,23 @@ escalation:
 
 vlm:
   enabled: true
-  backend: "gemini"             # "gemini" (Google AI Studio Free Tier) | "groq" | "ollama" | "fastvlm" | "moondream"
-  model: "gemini-2.0-flash"     # Free-tier fast multimodal model (or "gemini-1.5-flash")
-  background_polling: true      # Uses 0% local GPU over cloud REST, leaving 28.7 FPS for local vision
+  backend: "ollama"             # "ollama" (Local Ollama Gemma) | "gemini" | "groq" | "fastvlm" | "moondream"
+  api_url: "http://localhost:11434/api/chat"
+  model: "gemma4:cloud"           # Local Ollama multimodal reasoning model
+  background_polling: true      # Runs asynchronously via Ollama HTTP API without holding PyTorch GPU
 ```
 
 ### VLM Setup (Tier 2 Multimodal Reasoning)
 
-To use **Google Gemini 2.0 Flash** (Free Tier):
+To use **Local Ollama Gemma**:
 
-1. Get a free API key from [Google AI Studio](https://aistudio.google.com/).
-2. Create a `.env` file in the root directory (automatically git-ignored):
-   ```bash
-   GEMINI_API_KEY=your_google_ai_studio_api_key
-   ```
+```bash
+# 1. Install & start Ollama (https://ollama.ai)
+ollama pull gemma4:cloud
+
+# 2. Start Safety Copilot
+python main.py --source http://10.236.6.195:8554/stream
+```
 
 ---
 
