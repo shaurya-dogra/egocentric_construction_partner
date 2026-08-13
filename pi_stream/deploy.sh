@@ -7,7 +7,7 @@
 #   PI_HOST=10.0.0.5 PI_USER=pi PI_PASS=secret ./pi_stream/deploy.sh
 #
 # Environment variables (with defaults):
-#   PI_HOST  — Pi IP address     (default: 10.236.6.195)
+#   PI_HOST  — Pi IP address     (default: 10.201.61.195)
 #   PI_USER  — SSH user          (default: raycon)
 #   PI_PASS  — SSH password      (default: raycon)
 #   PI_PORT  — Stream HTTP port  (default: 8554)
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # ── Config ──
-PI_HOST="${PI_HOST:-10.236.6.195}"
+PI_HOST="${PI_HOST:-10.201.61.195}"
 PI_USER="${PI_USER:-raycon}"
 PI_PASS="${PI_PASS:-raycon}"
 PI_PORT="${PI_PORT:-8554}"

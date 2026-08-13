@@ -332,9 +332,9 @@ cd pi_stream
 python3 stream_server.py
 
 # Stop server remotely from Mac terminal
-ssh raycon@10.236.6.195 "pkill -f stream_server.py"
+ssh raycon@10.201.61.195 "pkill -f stream_server.py"
 ```
-The server stream endpoint: `http://10.236.6.195:8554/stream`.
+The server stream endpoint: `http://10.201.61.195:8554/stream`.
 
 ---
 
