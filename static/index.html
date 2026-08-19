@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kaya — Job Site Safety Copilot & Voice Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-layout">
+    
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-logo">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="22"></line>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1 class="brand-title">Kaya Copilot</h1>
+          <span class="brand-subtitle">Job Site Safety & Multimodal Assistant</span>
+        </div>
+      </div>
+
+      <!-- Mode & Status Controls -->
+      <div class="header-controls">
+        <!-- Benchmarking Frame Mode Toggle -->
+        <div class="mode-toggle-group" id="frameModeToggleGroup">
+          <button type="button" class="mode-btn active" id="btnModeTemporal" title="Send 5-10s rolling sequence of chronological frames">
+            <span class="mode-icon">🎞️</span> Temporal Frames
+          </button>
+          <button type="button" class="mode-btn" id="btnModeSingle" title="Send only single latest camera snapshot">
+            <span class="mode-icon">🖼️</span> Single Frame
+          </button>
+        </div>
+
+        <!-- Provider Badges -->
+        <div class="status-pills">
+          <div class="pill pill-green" id="pillVision">
+            <span class="dot"></span>
+            <span class="pill-label" id="pillVisionLabel">Vision: Loading...</span>
+          </div>
+          <div class="pill pill-blue" id="pillSTT">
+            <span class="dot"></span>
+            <span class="pill-label" id="pillSTTLabel">STT: Loading...</span>
+          </div>
+          <div class="pill pill-purple" id="pillTTS">
+            <span class="dot"></span>
+            <span class="pill-label" id="pillTTSLabel">TTS: Loading...</span>
+          </div>
+        </div>
+
+        <!-- Reset History Button -->
+        <button type="button" class="icon-btn" id="btnResetContext" title="Clear Conversation Context">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+            <path d="M3 3v5h5"></path>
+          </svg>
+          <span>Reset</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Side-by-Side Main Dashboard -->
+    <main class="dashboard-grid">
+      
+      <!-- LEFT PANEL: Live Safety Copilot Output (YOLO, Pose, Depth, Hazard Overlays) -->
+      <section class="panel video-panel">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <span class="panel-dot"></span>
+            <h2 class="panel-title">Safety Copilot Live Stream</h2>
+          </div>
+          <div class="video-meta-tags">
+            <span class="meta-tag metric-tag" id="trackedCountTag">0 Objects</span>
+            <span class="meta-tag hazard-tag" id="hazardsCountTag">0 Hazards</span>
+            <span class="meta-tag buffer-tag" id="bufferStatusTag">● Buffer: 6/6 (1 FPS)</span>
+            <span class="meta-tag fps-tag" id="copilotFpsTag">30 FPS</span>
+          </div>
+        </div>
+
+        <!-- Video Stream Stage -->
+        <div class="video-stage">
+          <!-- Live MJPEG Stream from SafetyCopilot Engine -->
+          <img id="copilotVideoFeed" src="/api/video_feed" class="live-stream-img" alt="Safety Copilot YOLO Stream" />
+          
+          <!-- Hidden fallback elements for client-side capture -->
+          <video id="cameraVideo" class="hidden" autoplay playsinline muted></video>
+          <canvas id="snapshotCanvas" class="hidden"></canvas>
+          <canvas id="samplerCanvas" class="hidden"></canvas>
+
+          <!-- Video HUD Status Overlay -->
+          <div class="video-hud">
+            <div class="hud-status" id="hudStatus">
+              <span class="status-indicator" id="statusListening">
+                <span class="pulse-ring"></span>
+                <span class="status-text">Listening...</span>
+              </span>
+              <span class="status-indicator" id="statusThinking">
+                <span class="spinner"></span>
+                <span class="status-text">Reasoning with Gemini...</span>
+              </span>
+              <span class="status-indicator" id="statusSpeaking">
+                <span class="sound-wave">
+                  <span></span><span></span><span></span>
+                </span>
+                <span class="status-text">Speaking...</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Video Footer Info & Object Summary -->
+        <div class="video-controls">
+          <div class="stream-info">
+            <span class="badge-active">● YOLO26 + Pose + Depth Anything Active</span>
+            <span class="separator">•</span>
+            <span id="objectsSummaryText">Monitoring job site area</span>
+          </div>
+          <button type="button" class="btn-outline" id="btnRefreshFeed" title="Reconnect stream">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 4v6h-6"></path>
+              <path d="M1 20v-6h6"></path>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            Refresh Stream
+          </button>
+        </div>
+      </section>
+
+      <!-- RIGHT PANEL: Push-to-Talk & Dialogue Chat Feed -->
+      <section class="panel chat-panel">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <h2 class="panel-title">Copilot Conversation</h2>
+          </div>
+          <span class="history-count" id="historyCounter">0 messages</span>
+        </div>
+
+        <!-- Scrollable Conversation Feed -->
+        <div class="conversation-feed" id="conversationFeed">
+          <div class="feed-empty-state" id="feedEmptyState">
+            <div class="empty-icon">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="12" cy="12" r="10"></circle>
+                <path d="M12 16v-4"></path>
+                <path d="M12 8h.01"></path>
+              </svg>
+            </div>
+            <h3>Ask Kaya Anything About the Scene</h3>
+            <p>Hold the microphone button or press <kbd>Space</kbd> to ask questions about detected workers, equipment, distances, or hazards in the live feed.</p>
+          </div>
+        </div>
+
+        <!-- Chat Input Footer -->
+        <div class="chat-footer">
+          
+          <!-- Push-to-Talk Button -->
+          <div class="ptt-bar">
+            <button type="button" class="ptt-btn" id="btnPushToTalk">
+              <div class="ptt-icon-wrap">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  <line x1="12" y1="19" x2="12" y2="22"></line>
+                </svg>
+              </div>
+              <div class="ptt-label-wrap">
+                <span class="ptt-main-text" id="pttMainText">Hold to Speak</span>
+                <span class="ptt-sub-text">or hold <kbd>Space</kbd></span>
+              </div>
+            </button>
+          </div>
+
+          <!-- Direct Text Question Form -->
+          <form class="text-query-form" id="textQueryForm">
+            <input
+              type="text"
+              class="query-input"
+              id="inputQueryText"
+              placeholder="Or type a question about what Kaya sees..."
+              autocomplete="off"
+            />
+            <button type="submit" class="btn-send" id="btnSendText" title="Send question">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </form>
+
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Toast Notification Banner -->
+    <div class="toast-container" id="toastContainer"></div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -215,18 +215,20 @@ class SafetyCopilot:
         # ── Core Pipeline ────────────────────────────────────
         models_cfg = config["models"]
         tool_cfg = models_cfg.get("tool", {})
+        general_cfg = models_cfg.get("general", {})
         self.detector = Detector(
-            general_model_path=models_cfg["general"]["path"],
+            general_model_path=general_cfg.get("path"),
             ppe_model_path=models_cfg["ppe"]["path"],
             device=self.device,
             tracker_config=config["tracking"]["tracker"],
-            general_conf=models_cfg["general"]["confidence"],
-            general_iou=models_cfg["general"]["iou"],
+            general_conf=general_cfg.get("confidence", 0.30),
+            general_iou=general_cfg.get("iou", 0.45),
+            general_classes=general_cfg.get("classes"),
             ppe_conf=models_cfg["ppe"]["confidence"],
             ppe_iou=models_cfg["ppe"]["iou"],
             ppe_api_key=models_cfg["ppe"].get("api_key"),
             tool_model_path=tool_cfg.get("path") if tool_cfg.get("enabled") else None,
-            tool_conf=tool_cfg.get("confidence", 0.25),
+            tool_conf=tool_cfg.get("confidence", 0.20),
             tool_iou=tool_cfg.get("iou", 0.45),
             tool_classes=tool_cfg.get("classes"),
         )
@@ -399,10 +401,12 @@ class SafetyCopilot:
         # ── 1. Detection + Tracking (main thread — tracker is stateful) ──
         detections = self.detector.detect_and_track(frame)
 
-        # Update tracked objects from detections
-        self._update_tracked_objects(detections, timestamp)
-
         # ── 2. Submit parallel tasks for pose, depth, and tools ──
+        # Submit tool detection (every 2nd frame, downscaled to 640px)
+        tool_future = self._executor.submit(
+            self.detector.detect_tools, frame, frame_number, 2, True
+        )
+
         person_tracks = {
             tid: obj
             for tid, obj in self._tracked_objects.items()
@@ -418,17 +422,15 @@ class SafetyCopilot:
         if self.depth_estimator.enabled and frame_number % 10 == 0:
             self.depth_estimator.submit_async(frame)
 
-        # Submit tool detection (every 4th frame, downscaled 640x360)
-        tool_future = self._executor.submit(
-            self.detector.detect_tools, frame, frame_number, 4, True
-        )
-
         # ── 3. Gather parallel results ────────────────────────
         poses = pose_future.result()
 
         tool_detections = tool_future.result()
         if tool_detections:
             detections = self.detector._deduplicate(detections + tool_detections)
+
+        # Update tracked objects from all detections (persons, vehicles, tools, objects)
+        self._update_tracked_objects(detections, timestamp)
 
         # Read latest async depth map (instant 0ms fetch)
         latest_dmap = self.depth_estimator.get_latest_depth_map()
@@ -516,46 +518,19 @@ class SafetyCopilot:
             fps=self._current_fps,
         )
 
-        # ── 9. Background Tier 2 Reasoning ──────────────────
-        if self.vlm_hook.is_available() and getattr(self.vlm_hook, "background_polling", False):
-            now = time.time()
-            if now - self.last_vlm_poll >= self.vlm_poll_interval:
-                self.vlm_hook.submit_scene(frame, result)
-                self.last_vlm_poll = now
-            predicted_hazards: list[HazardAssessment] = []
-            for insight in self.vlm_hook.get_alerts():
-                if insight.get("kind") != "prediction":
-                    continue
-                # Skip PPE-related predictions to disable false PPE alerts for now
-                label = insight.get("label", "").lower()
-                reason = insight.get("reason", "").lower()
-                if any(x in label or x in reason for x in ["hardhat", "hard hat", "vest", "ppe", "helmet", "safety gear", "goggle", "glove", "boot", "mask"]):
-                    continue
-                predicted_hazards.append(
-                    HazardAssessment(
-                        hazard_type="predicted_hazard",
-                        severity=Severity.WARNING,
-                        description=(
-                            f"PREDICTION ({insight.get('confidence', 0.0):.2f}): "
-                            f"{insight.get('label', 'predicted_hazard')} — {insight.get('reason', '')}"
-                        ),
-                        worker_track_id=None,
-                        hazard_bbox=None,
-                        state=HazardState.ESCALATED,
-                        first_seen=now,
-                        is_escalated=True,
-                    )
-                )
-            if predicted_hazards:
-                hazards.extend(predicted_hazards)
-                result.hazards = hazards
-                predicted_alerts = self.alert_manager.process_hazards(predicted_hazards, worker_ppe)
-                alerts.extend(predicted_alerts)
-                result.alerts = alerts
-                for hazard in predicted_hazards:
-                    self.event_logger.log_hazard(hazard, frame_number)
-                for alert in predicted_alerts:
-                    self.event_logger.log_alert(alert, frame_number)
+        # ── 9. Update CopilotBridge for Live Web Dashboard ──
+        try:
+            from app.copilot_bridge import copilot_bridge
+            display_frame = self.overlay_renderer.render(frame, result)
+            copilot_bridge.update_frame(
+                display_frame=display_frame,
+                raw_frame=frame,
+                frame_result=result,
+                fps=self._current_fps
+            )
+        except Exception:
+            pass
+
         return result
 
     def _update_tracked_objects(
@@ -641,8 +616,8 @@ Keyboard controls (during display):
     )
     parser.add_argument(
         "--source",
-        required=True,
-        help="Input source: 'webcam' (or int), video file path, or image file path",
+        default="webcam",
+        help="Input source: 'webcam' (or int), video file path, or image file path (default: 'webcam')",
     )
     parser.add_argument(
         "--config",
@@ -664,6 +639,18 @@ Keyboard controls (during display):
         "--no-voice",
         action="store_true",
         help="Disable TTS voice alerts",
+    )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        default=True,
+        help="Launch the web dashboard on http://127.0.0.1:8000 (default: True)",
+    )
+    parser.add_argument(
+        "--no-web",
+        dest="web",
+        action="store_false",
+        help="Disable web dashboard",
     )
     parser.add_argument(
         "--zones",
@@ -723,6 +710,17 @@ def main() -> None:
         copilot.stop()
 
     signal.signal(signal.SIGINT, signal_handler)
+
+    if args.web:
+        import threading
+        import uvicorn
+        from app.config import get_settings
+        app_settings = get_settings()
+        def _run_web():
+            uvicorn.run("app.main:app", host=app_settings.host, port=app_settings.port, log_level="warning")
+        web_thread = threading.Thread(target=_run_web, name="FastAPIWebThread", daemon=True)
+        web_thread.start()
+        logger.info(f"🚀 Live Web Dashboard active at http://{app_settings.host}:{app_settings.port}")
 
     copilot.run(
         source=source,

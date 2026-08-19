@@ -1,27 +1,32 @@
-"""YOLO26 detection wrapper with dual-model support (COCO + PPE).
+"""Multi-model Detection Engine for Safety Copilot.
 
-Runs a general COCO-pretrained model and an optional PPE-specific model,
-merging results into a unified list of ``Detection`` objects.  Supports
-ByteTrack-based tracking via the Ultralytics ``model.track()`` API.
+Runs unified detection and tracking across:
+1. General COCO Model (e.g. YOLO11n) for persons, vehicles, workplace objects, and general items.
+2. PPE-Specific Model for job-site compliance (Hardhat, Vest, Mask, Gloves, Boots, etc.).
+3. Open-Vocabulary Tool Model (YOLO-World) for construction tools (hammers, drills, saws, wrenches, etc.).
+
+Features ByteTrack/Spatial tracking, intelligent multi-model deduplication, and appearance embeddings.
 """
 
 from __future__ import annotations
 
+import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Optional
-import logging
 
 import cv2
 import numpy as np
-import re
 
-# Suppress the misleading ultralytics warning when ReID initializes
+# Suppress misleading ultralytics warning when ReID initializes
 try:
     from ultralytics.utils import LOGGER as ULTRALYTICS_LOGGER
+
     class _UltralyticsSourceFilter(logging.Filter):
         def filter(self, record):
             return "'source' is missing" not in record.getMessage()
+
     ULTRALYTICS_LOGGER.addFilter(_UltralyticsSourceFilter())
 except ImportError:
     pass
@@ -29,19 +34,6 @@ except ImportError:
 from core.models import Detection
 
 logger = logging.getLogger(__name__)
-
-# ── COCO class filter ─────────────────────────────────────────
-
-# Relevant COCO class IDs for job-site safety
-_COCO_FILTER: dict[int, str] = {
-    0: "person",
-    1: "bicycle",
-    2: "car",
-    3: "motorcycle",
-    5: "bus",
-    7: "truck",
-    67: "cell_phone",
-}
 
 # ── PPE name normalisation ───────────────────────────────────
 
@@ -64,43 +56,164 @@ _PPE_NAME_MAP: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?i)^mask"), "mask"),
 ]
 
+# Set of canonical PPE gear names (used to set is_ppe flag)
+_PPE_GEAR_CLASSES = frozenset({
+    "hardhat", "no_hardhat", "vest", "no_vest", "goggles", "no_goggles",
+    "gloves", "no_gloves", "boots", "no_boots", "mask", "no_mask",
+})
+
+# ── Tool name normalisation ──────────────────────────────────
+
+_TOOL_NAME_MAP: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(?i)power[_\-\s]*drill"), "drill"),
+    (re.compile(r"(?i)drill"), "drill"),
+    (re.compile(r"(?i)circular[_\-\s]*saw"), "saw"),
+    (re.compile(r"(?i)hand[_\-\s]*saw"), "saw"),
+    (re.compile(r"(?i)chainsaw"), "saw"),
+    (re.compile(r"(?i)saw"), "saw"),
+    (re.compile(r"(?i)measuring[_\-\s]*tape"), "measuring_tape"),
+    (re.compile(r"(?i)tape[_\-\s]*measure"), "measuring_tape"),
+    (re.compile(r"(?i)screwdriver"), "screwdriver"),
+    (re.compile(r"(?i)adjustable[_\-\s]*wrench"), "wrench"),
+    (re.compile(r"(?i)wrench"), "wrench"),
+    (re.compile(r"(?i)pliers"), "pliers"),
+    (re.compile(r"(?i)hammer"), "hammer"),
+    (re.compile(r"(?i)scissors"), "scissors"),
+    (re.compile(r"(?i)box[_\-\s]*cutter"), "knife"),
+    (re.compile(r"(?i)utility[_\-\s]*knife"), "knife"),
+    (re.compile(r"(?i)knife"), "knife"),
+    (re.compile(r"(?i)spirit[_\-\s]*level"), "level"),
+    (re.compile(r"(?i)level"), "level"),
+    (re.compile(r"(?i)flashlight"), "flashlight"),
+    (re.compile(r"(?i)shovel"), "shovel"),
+    (re.compile(r"(?i)ladder"), "ladder"),
+    (re.compile(r"(?i)toolbox"), "toolbox"),
+    (re.compile(r"(?i)power[_\-\s]*tool"), "tool"),
+    (re.compile(r"(?i)tool"), "tool"),
+    (re.compile(r"(?i)fire[_\-\s]*extinguisher"), "fire_extinguisher"),
+]
+
 
 def _normalise_ppe_name(raw: str) -> str:
     """Map a raw PPE class name to a canonical name."""
     for pattern, canonical in _PPE_NAME_MAP:
         if pattern.search(raw):
             return canonical
-    # Fallback: lowercase, strip whitespace
     return raw.strip().lower().replace(" ", "_").replace("-", "_")
 
 
+def _normalise_tool_name(raw: str) -> str:
+    """Map a raw tool class name to a canonical name."""
+    for pattern, canonical in _TOOL_NAME_MAP:
+        if pattern.search(raw):
+            return canonical
+    return raw.strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _box_iou(box1: tuple[int, int, int, int], box2: tuple[int, int, int, int]) -> float:
+    """Calculate Intersection-over-Union (IoU) between two bounding boxes."""
+    x1_1, y1_1, x2_1, y2_1 = box1
+    x1_2, y1_2, x2_2, y2_2 = box2
+
+    xi1 = max(x1_1, x1_2)
+    yi1 = max(y1_1, y1_2)
+    xi2 = min(x2_1, x2_2)
+    yi2 = min(y2_1, y2_2)
+
+    inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+    box1_area = max(0, x2_1 - x1_1) * max(0, y2_1 - y1_1)
+    box2_area = max(0, x2_2 - x1_2) * max(0, y2_2 - y1_2)
+    union_area = box1_area + box2_area - inter_area
+
+    if union_area <= 0:
+        return 0.0
+    return float(inter_area) / float(union_area)
+
+
+class _SpatialTracker:
+    """Fast spatial IoU tracker for auxiliary detections (tools, custom objects)."""
+
+    def __init__(self, start_id: int = 200, max_stale_frames: int = 20, iou_thresh: float = 0.20):
+        self._next_id = start_id
+        self._tracks: dict[int, dict[str, Any]] = {}
+        self._max_stale_frames = max_stale_frames
+        self._iou_thresh = iou_thresh
+
+    def update(self, detections: list[Detection], frame_number: int) -> list[Detection]:
+        # Expire stale tracks
+        dead = [
+            tid for tid, t in self._tracks.items()
+            if frame_number - t["last_frame"] > self._max_stale_frames
+        ]
+        for tid in dead:
+            del self._tracks[tid]
+
+        unmatched = list(range(len(detections)))
+        for tid, t in list(self._tracks.items()):
+            best_iou = 0.0
+            best_idx = -1
+            for idx in unmatched:
+                det = detections[idx]
+                if det.class_name == t["class_name"]:
+                    iou = _box_iou(det.bbox, t["bbox"])
+                    if iou > best_iou and iou >= self._iou_thresh:
+                        best_iou = iou
+                        best_idx = idx
+            if best_idx != -1:
+                detections[best_idx].track_id = tid
+                self._tracks[tid]["bbox"] = detections[best_idx].bbox
+                self._tracks[tid]["last_frame"] = frame_number
+                unmatched.remove(best_idx)
+
+        # Assign new IDs for remaining detections
+        for idx in unmatched:
+            tid = self._next_id
+            self._next_id += 1
+            detections[idx].track_id = tid
+            self._tracks[tid] = {
+                "bbox": detections[idx].bbox,
+                "class_name": detections[idx].class_name,
+                "last_frame": frame_number,
+            }
+
+        return detections
+
+
 class Detector:
-    """Dual-model YOLO26 detector (general COCO + optional PPE).
+    """Multi-model unified detector (General COCO + PPE + YOLO-World Tools).
 
     Args:
         general_model_path: Path or name for the COCO-pretrained model
-            (e.g. ``"yolo26n.pt"``).  Ultralytics auto-downloads on first use.
+            (e.g. ``"yolo11n.pt"`` or ``"yolo26n.pt"``).
         ppe_model_path: Path to a PPE-specific model, or ``None`` to skip.
         device: Compute device string (``"cpu"``, ``"mps"``, etc.).
+        tracker_config: Tracking configuration file for ByteTrack.
         general_conf: Confidence threshold for the general model.
         general_iou: IoU threshold for NMS on the general model.
+        general_classes: Optional list of class names or IDs to filter. None = all classes.
         ppe_conf: Confidence threshold for the PPE model.
         ppe_iou: IoU threshold for NMS on the PPE model.
+        ppe_api_key: Roboflow API key if using a Roboflow model.
+        tool_model_path: Path to YOLO-World model (e.g. ``"yolov8s-worldv2.pt"``).
+        tool_conf: Confidence threshold for the tool model.
+        tool_iou: IoU threshold for NMS on the tool model.
+        tool_classes: List of open-vocabulary tool classes for YOLO-World.
     """
 
     def __init__(
         self,
-        general_model_path: str = "yolo26n.pt",
+        general_model_path: Optional[str] = "yolo11n.pt",
         ppe_model_path: Optional[str] = None,
         device: str = "cpu",
         tracker_config: str = "bytetrack.yaml",
-        general_conf: float = 0.35,
+        general_conf: float = 0.30,
         general_iou: float = 0.45,
+        general_classes: Optional[list[str] | list[int]] = None,
         ppe_conf: float = 0.30,
         ppe_iou: float = 0.45,
         ppe_api_key: Optional[str] = None,
         tool_model_path: Optional[str] = None,
-        tool_conf: float = 0.25,
+        tool_conf: float = 0.20,
         tool_iou: float = 0.45,
         tool_classes: Optional[list[str]] = None,
     ) -> None:
@@ -115,10 +228,14 @@ class Detector:
         self._tool_conf = tool_conf
         self._tool_iou = tool_iou
         self._tool_classes = tool_classes or []
-        self._cached_tool_detections: list[Detection] = []  # Cache for frame-skipped tool detection
+        self._cached_tool_detections: list[Detection] = []
+        self._tool_tracker = _SpatialTracker(start_id=200)
 
         # ── Load general (COCO) model ─────────────────────────
         self._general_model = None
+        self._allowed_coco_ids: Optional[list[int]] = None
+        self._coco_names: dict[int, str] = {}
+
         if general_model_path is not None and general_model_path.lower() not in ("none", "null", ""):
             logger.info(
                 "Loading general model '%s' on device '%s'…",
@@ -126,9 +243,21 @@ class Detector:
                 device,
             )
             self._general_model = YOLO(general_model_path)
-            logger.info("General model loaded — classes: %d", len(self._general_model.names))
+            self._coco_names = {i: name for i, name in self._general_model.names.items()}
+            logger.info("General model loaded — %d classes available", len(self._coco_names))
+
+            if general_classes:
+                name_to_id = {v.lower(): k for k, v in self._coco_names.items()}
+                resolved_ids = []
+                for c in general_classes:
+                    if isinstance(c, int):
+                        resolved_ids.append(c)
+                    elif isinstance(c, str) and c.lower() in name_to_id:
+                        resolved_ids.append(name_to_id[c.lower()])
+                self._allowed_coco_ids = resolved_ids if resolved_ids else None
+                logger.info("Filtering general model to classes: %s", self._allowed_coco_ids)
         else:
-            logger.info("General model disabled — relying entirely on consolidated PPE model")
+            logger.info("General model disabled")
 
         # ── Load tool model (optional YOLO-World) ─────────────
         self._tool_model = None
@@ -141,7 +270,7 @@ class Detector:
             from ultralytics import YOLOWorld
             self._tool_model = YOLOWorld(tool_model_path)
             self._tool_model.set_classes(self._tool_classes)
-            logger.info("YOLO-World tool model loaded successfully with classes: %s", self._tool_classes)
+            logger.info("YOLO-World tool model loaded with %d classes: %s", len(self._tool_classes), self._tool_classes)
 
         # ── Load PPE model (optional) ─────────────────────────
         self._ppe_model = None
@@ -152,7 +281,6 @@ class Detector:
                 ppe_model_path,
                 device,
             )
-            # Check if it looks like a Roboflow model ID (e.g. project/version)
             if "/" in ppe_model_path and not ppe_model_path.endswith(".pt") and not ppe_model_path.startswith("hf:"):
                 import os
                 import sys
@@ -160,19 +288,11 @@ class Detector:
                     os.environ["ROBOFLOW_API_KEY"] = ppe_api_key
                 try:
                     from inference import get_model
-                except (ImportError, ModuleNotFoundError):
-                    logger.critical(
-                        "\n" + "="*85 + "\n"
-                        "❌ ERROR: The 'inference' package is required to load Roboflow models but was not found.\n"
-                        "Since 'inference' only supports Python <= 3.12 (and you are currently running Python 3.13),\n"
-                        "you must run the safety copilot using Python 3.10:\n\n"
-                        f"    .venv/bin/python3.10 main.py --source {sys.argv[sys.argv.index('--source') + 1] if '--source' in sys.argv else 'webcam'}\n"
-                        + "="*85 + "\n"
-                    )
-                    sys.exit(1)
-                self._ppe_model = get_model(model_id=ppe_model_path)
-                self._ppe_model_is_roboflow = True
-                logger.info("PPE model loaded via Roboflow Inference API")
+                    self._ppe_model = get_model(model_id=ppe_model_path)
+                    self._ppe_model_is_roboflow = True
+                    logger.info("PPE model loaded via Roboflow Inference API")
+                except Exception as e:
+                    logger.error("Failed to load Roboflow PPE model: %s", e)
             elif ppe_model_path.startswith("hf:"):
                 try:
                     parts = ppe_model_path.split(":", 2)
@@ -188,8 +308,6 @@ class Detector:
                     )
                 except Exception as e:
                     logger.critical("Failed to download model from Hugging Face: %s", e)
-                    import sys
-                    sys.exit(1)
             else:
                 self._ppe_model = YOLO(ppe_model_path)
                 logger.info(
@@ -202,26 +320,15 @@ class Detector:
     # ── Public API ────────────────────────────────────────────
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
-        """Run all active models on *frame* and return merged detections."""
+        """Run all active models on *frame* without tracking and return merged detections."""
         detections: list[Detection] = []
 
-        if self._general_model is None:
-            if self._ppe_model is not None and not self._ppe_model_is_roboflow:
-                results = self._ppe_model.predict(
-                    source=frame,
-                    device=self._device,
-                    conf=self._ppe_conf,
-                    iou=self._ppe_iou,
-                    verbose=False,
-                )
-                detections.extend(self._parse_consolidated_results(results, with_tracking=False))
-            elif self._ppe_model is not None:
-                detections.extend(self._run_ppe(frame))
-        else:
+        if self._general_model is not None:
             detections.extend(self._run_general(frame))
+
+        if self._ppe_model is not None:
             detections.extend(self._run_ppe(frame))
 
-        # Run tool detection (YOLO-World) if active
         if self._tool_model is not None:
             tool_results = self._tool_model.predict(
                 source=frame,
@@ -235,25 +342,28 @@ class Detector:
         return self._deduplicate(detections)
 
     def detect_and_track(self, frame: np.ndarray) -> list[Detection]:
-        """Run detection/PPE models with tracking enabled. Tool detection excluded (run separately)."""
+        """Run general and PPE models with tracking enabled.
+
+        Tool detection is performed asynchronously via ``detect_tools``.
+        """
         detections: list[Detection] = []
 
-        if self._general_model is None:
-            if self._ppe_model is not None and not self._ppe_model_is_roboflow:
-                results = self._ppe_model.track(
-                    source=frame,
-                    device=self._device,
-                    conf=self._ppe_conf,
-                    iou=self._ppe_iou,
-                    verbose=False,
-                    persist=True,
-                    tracker=self._tracker_config,
-                )
-                detections.extend(self._parse_consolidated_results(results, with_tracking=True))
-            elif self._ppe_model is not None:
-                detections.extend(self._run_ppe(frame))
-        else:
+        if self._general_model is not None:
             detections.extend(self._run_general_tracked(frame))
+        elif self._ppe_model is not None and not self._ppe_model_is_roboflow:
+            # Fallback tracking on PPE model if general model is absent
+            results = self._ppe_model.track(
+                source=frame,
+                device=self._device,
+                conf=self._ppe_conf,
+                iou=self._ppe_iou,
+                verbose=False,
+                persist=True,
+                tracker=self._tracker_config,
+            )
+            detections.extend(self._parse_consolidated_results(results, with_tracking=True))
+
+        if self._ppe_model is not None and self._general_model is not None:
             detections.extend(self._run_ppe(frame))
 
         return self._deduplicate(detections)
@@ -262,28 +372,27 @@ class Detector:
         self,
         frame: np.ndarray,
         frame_number: int,
-        run_every_n: int = 3,
+        run_every_n: int = 2,
         downscale: bool = True,
     ) -> list[Detection]:
-        """Run YOLO-World tool detection with frame-skip caching.
+        """Run YOLO-World tool detection with spatial tracking and caching.
 
-        Separated from detect_and_track so it can run in parallel.
-        Uses downscaled input for speed since tools are large objects.
+        Runs asynchronously in parallel with pose and depth estimation.
         """
         if self._tool_model is None:
             return []
 
-        # Frame skip: return cached results on non-inference frames
-        if frame_number % run_every_n != 0:
+        # Return cached results on frame-skipped frames
+        if run_every_n > 1 and (frame_number % run_every_n != 0) and self._cached_tool_detections:
             return list(self._cached_tool_detections)
 
-        # Optionally downscale for faster inference
         inference_frame = frame
         scale_x, scale_y = 1.0, 1.0
         if downscale:
             h, w = frame.shape[:2]
-            target_w, target_h = 640, 360
-            if w > target_w or h > target_h:
+            target_w = 640
+            if w > target_w:
+                target_h = int(h * (target_w / w))
                 inference_frame = cv2.resize(frame, (target_w, target_h))
                 scale_x = w / target_w
                 scale_y = h / target_h
@@ -295,96 +404,54 @@ class Detector:
             iou=self._tool_iou,
             verbose=False,
         )
-        detections = self._parse_tool_results(tool_results, with_tracking=False)
+        raw_detections = self._parse_tool_results(tool_results, with_tracking=False)
 
-        # Scale bboxes back to original resolution
+        # Scale bboxes back to original frame coordinates
         if downscale and (scale_x != 1.0 or scale_y != 1.0):
-            for det in detections:
+            for det in raw_detections:
                 x1, y1, x2, y2 = det.bbox
                 det.bbox = (
                     int(x1 * scale_x), int(y1 * scale_y),
                     int(x2 * scale_x), int(y2 * scale_y),
                 )
 
-        self._cached_tool_detections = detections
-        return list(detections)
-
-    def _parse_consolidated_results(
-        self, results, *, with_tracking: bool = False
-    ) -> list[Detection]:
-        """Extract both General (coco) and PPE detections from a single consolidated model run."""
-        detections: list[Detection] = []
-        for result in results:
-            boxes = result.boxes
-            if boxes is None or len(boxes) == 0:
-                continue
-
-            for i in range(len(boxes)):
-                cls_id = int(boxes.cls[i].item())
-                raw_name = self._ppe_model.names.get(cls_id, f"class_{cls_id}")
-                canonical = _normalise_ppe_name(raw_name)
-                conf = float(boxes.conf[i].item())
-                x1, y1, x2, y2 = boxes.xyxy[i].tolist()
-                bbox = (int(x1), int(y1), int(x2), int(y2))
-
-                track_id: Optional[int] = None
-                if with_tracking and boxes.id is not None:
-                    track_id = int(boxes.id[i].item())
-
-                # Determine if this class is a worker/vehicle or a PPE gear item
-                raw_lower = raw_name.lower()
-                is_person_or_vehicle = "person" in raw_lower or any(
-                    v in raw_lower for v in ("vehicle", "machinery", "car", "truck", "bus", "forklift")
-                )
-
-                if is_person_or_vehicle:
-                    appearance_embedding = self._extract_embedding(result, i)
-                    detections.append(
-                        Detection(
-                            class_name=canonical,
-                            confidence=conf,
-                            bbox=bbox,
-                            track_id=track_id,
-                            is_ppe=False,
-                            model_source="coco",
-                            appearance_embedding=appearance_embedding,
-                        )
-                    )
-                else:
-                    detections.append(
-                        Detection(
-                            class_name=canonical,
-                            confidence=conf,
-                            bbox=bbox,
-                            track_id=None,
-                            is_ppe=True,
-                            model_source="ppe",
-                        )
-                    )
-        return detections
+        # Assign stable track IDs to tools across frames
+        tracked_tools = self._tool_tracker.update(raw_detections, frame_number)
+        self._cached_tool_detections = tracked_tools
+        return list(tracked_tools)
 
     def _deduplicate(self, detections: list[Detection]) -> list[Detection]:
-        """Remove overlapping duplicate detections across general and PPE models."""
+        """Remove duplicate detections across models while preserving PPE items on workers."""
         if not detections:
             return []
 
-        # Sort prioritizing general model (coco) and tool detections (sources of tracking), then confidence
+        # Sort: prefer general/tool models, then higher confidence
         sorted_dets = sorted(
             detections,
             key=lambda d: (1 if d.model_source in ("coco", "tool") else 0, d.confidence),
-            reverse=True
+            reverse=True,
         )
         kept: list[Detection] = []
 
         for det in sorted_dets:
             overlap = False
             for existing in kept:
-                # Check if classes are compatible
+                # Do NOT suppress if one is PPE and the other is not (e.g. hardhat on person)
+                if det.is_ppe != existing.is_ppe:
+                    continue
+
+                # Do NOT suppress if one is a tool and the other is a person
+                if (det.model_source == "tool" and existing.class_name == "person") or (
+                    existing.model_source == "tool" and det.class_name == "person"
+                ):
+                    continue
+
+                # Check if classes are compatible or identical
                 if self._is_compatible(det.class_name, existing.class_name):
-                    # Check box overlap (IoU > 0.45)
-                    if self._box_iou(det.bbox, existing.bbox) > 0.45:
+                    if _box_iou(det.bbox, existing.bbox) > 0.45:
                         overlap = True
                         break
+
             if not overlap:
                 kept.append(det)
 
@@ -395,28 +462,14 @@ class Detector:
         if cls1 == cls2:
             return True
         vehicles = {"car", "truck", "bus", "motorcycle", "forklift", "machinery", "vehicle"}
-        return cls1 in vehicles and cls2 in vehicles
+        if cls1 in vehicles and cls2 in vehicles:
+            return True
+        tools = {"tool", "drill", "saw", "hammer", "wrench", "screwdriver", "pliers", "knife"}
+        if cls1 in tools and cls2 in tools:
+            return True
+        return False
 
-    @staticmethod
-    def _box_iou(box1: tuple[int, int, int, int], box2: tuple[int, int, int, int]) -> float:
-        x1_1, y1_1, x2_1, y2_1 = box1
-        x1_2, y1_2, x2_2, y2_2 = box2
-
-        xi1 = max(x1_1, x1_2)
-        yi1 = max(y1_1, y1_2)
-        xi2 = min(x2_1, x2_2)
-        yi2 = min(y2_1, y2_2)
-
-        inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
-        box1_area = (x2_1 - x1_1) * (y2_1 - y1_1)
-        box2_area = (x2_2 - x1_2) * (y2_2 - y1_2)
-        union_area = box1_area + box2_area - inter_area
-
-        if union_area <= 0:
-            return 0.0
-        return float(inter_area) / float(union_area)
-
-    # ── Internal: general model ───────────────────────────────
+    # ── Internal: General model ───────────────────────────────
 
     def _run_general(self, frame: np.ndarray) -> list[Detection]:
         """Run the general COCO model (predict, no tracking)."""
@@ -426,9 +479,9 @@ class Detector:
             conf=self._general_conf,
             iou=self._general_iou,
             verbose=False,
-            classes=list(_COCO_FILTER.keys()),
+            classes=self._allowed_coco_ids,
         )
-        return self._parse_general_results(results)
+        return self._parse_general_results(results, with_tracking=False)
 
     def _run_general_tracked(self, frame: np.ndarray) -> list[Detection]:
         """Run the general COCO model with configured tracking."""
@@ -438,7 +491,7 @@ class Detector:
             conf=self._general_conf,
             iou=self._general_iou,
             verbose=False,
-            classes=list(_COCO_FILTER.keys()),
+            classes=self._allowed_coco_ids,
             persist=True,
             tracker=self._tracker_config,
         )
@@ -447,7 +500,7 @@ class Detector:
     def _parse_general_results(
         self, results, *, with_tracking: bool = False
     ) -> list[Detection]:
-        """Extract ``Detection`` objects from Ultralytics results."""
+        """Extract ``Detection`` objects from Ultralytics general results."""
         detections: list[Detection] = []
         for result in results:
             boxes = result.boxes
@@ -456,9 +509,7 @@ class Detector:
 
             for i in range(len(boxes)):
                 cls_id = int(boxes.cls[i].item())
-                if cls_id not in _COCO_FILTER:
-                    continue
-
+                class_name = self._coco_names.get(cls_id, f"class_{cls_id}").lower().replace(" ", "_")
                 conf = float(boxes.conf[i].item())
                 x1, y1, x2, y2 = boxes.xyxy[i].tolist()
                 bbox = (int(x1), int(y1), int(x2), int(y2))
@@ -466,11 +517,12 @@ class Detector:
                 track_id: Optional[int] = None
                 if with_tracking and boxes.id is not None:
                     track_id = int(boxes.id[i].item())
+
                 appearance_embedding = self._extract_embedding(result, i)
 
                 detections.append(
                     Detection(
-                        class_name=_COCO_FILTER[cls_id],
+                        class_name=class_name,
                         confidence=conf,
                         bbox=bbox,
                         track_id=track_id,
@@ -483,12 +535,7 @@ class Detector:
 
     @staticmethod
     def _extract_embedding(result, index: int) -> Optional[list[float]]:
-        """Best-effort extraction of tracker appearance features.
-
-        Ultralytics tracker backends do not expose a stable public accessor for
-        ReID features across versions. Tier 2 consumes them opportunistically
-        when present and falls back to track continuity when they are absent.
-        """
+        """Best-effort extraction of tracker appearance features."""
         candidates = (
             getattr(result, "embeddings", None),
             getattr(result, "feats", None),
@@ -515,12 +562,11 @@ class Detector:
     # ── Internal: PPE model ───────────────────────────────────
 
     def _run_ppe(self, frame: np.ndarray) -> list[Detection]:
-        """Run the PPE model (if loaded) and return normalised detections."""
+        """Run the PPE model and return normalised detections."""
         if self._ppe_model is None:
             return []
 
         if self._ppe_model_is_roboflow:
-            # Roboflow local inference returns a list of ObjectDetectionInferenceResponse
             results = self._ppe_model.infer(frame)
             detections: list[Detection] = []
             for res in results:
@@ -535,13 +581,14 @@ class Detector:
                     y2 = int(cy + h / 2)
                     bbox = (x1, y1, x2, y2)
                     canonical = _normalise_ppe_name(pred.class_name)
+                    is_gear = canonical in _PPE_GEAR_CLASSES
                     detections.append(
                         Detection(
                             class_name=canonical,
                             confidence=pred.confidence,
                             bbox=bbox,
                             track_id=None,
-                            is_ppe=True,
+                            is_ppe=is_gear,
                             model_source="ppe",
                         )
                     )
@@ -569,14 +616,54 @@ class Detector:
                 x1, y1, x2, y2 = boxes.xyxy[i].tolist()
                 bbox = (int(x1), int(y1), int(x2), int(y2))
 
+                is_gear = canonical in _PPE_GEAR_CLASSES
+
                 detections.append(
                     Detection(
                         class_name=canonical,
                         confidence=conf,
                         bbox=bbox,
                         track_id=None,
-                        is_ppe=True,
+                        is_ppe=is_gear,
                         model_source="ppe",
+                    )
+                )
+        return detections
+
+    def _parse_consolidated_results(
+        self, results, *, with_tracking: bool = False
+    ) -> list[Detection]:
+        """Extract detections from a consolidated PPE run with tracking."""
+        detections: list[Detection] = []
+        for result in results:
+            boxes = result.boxes
+            if boxes is None or len(boxes) == 0:
+                continue
+
+            for i in range(len(boxes)):
+                cls_id = int(boxes.cls[i].item())
+                raw_name = self._ppe_model.names.get(cls_id, f"class_{cls_id}")
+                canonical = _normalise_ppe_name(raw_name)
+                conf = float(boxes.conf[i].item())
+                x1, y1, x2, y2 = boxes.xyxy[i].tolist()
+                bbox = (int(x1), int(y1), int(x2), int(y2))
+
+                track_id: Optional[int] = None
+                if with_tracking and boxes.id is not None:
+                    track_id = int(boxes.id[i].item())
+
+                is_gear = canonical in _PPE_GEAR_CLASSES
+                appearance_embedding = self._extract_embedding(result, i) if not is_gear else None
+
+                detections.append(
+                    Detection(
+                        class_name=canonical,
+                        confidence=conf,
+                        bbox=bbox,
+                        track_id=track_id if not is_gear else None,
+                        is_ppe=is_gear,
+                        model_source="ppe" if is_gear else "coco",
+                        appearance_embedding=appearance_embedding,
                     )
                 )
         return detections
@@ -596,7 +683,7 @@ class Detector:
                 else:
                     raw_name = "tool"
 
-                canonical = raw_name.lower().replace(" ", "_")
+                canonical = _normalise_tool_name(raw_name)
                 conf = float(boxes.conf[i].item())
                 x1, y1, x2, y2 = boxes.xyxy[i].tolist()
                 bbox = (int(x1), int(y1), int(x2), int(y2))

@@ -14,8 +14,9 @@ class DepthEstimator:
     def __init__(self, config: dict, device_override: Optional[str] = None):
         self.config = config
         self.enabled = config.get("enabled", True)
-        self.model_path = config.get("path", "depth-anything/Depth-Anything-V2-Small-hf")
-        self.scale_factor = float(config.get("scale_factor", 15.0))
+        self.model_path = config.get("path", "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf")
+        self.is_metric = bool(config.get("is_metric", "metric" in self.model_path.lower()))
+        self.scale_factor = float(config.get("scale_factor", 1.0 if self.is_metric else 15.0))
         self.run_every_n = int(config.get("run_every_n_frames", 3))
         
         if not self.enabled:
@@ -28,12 +29,18 @@ class DepthEstimator:
         else:
             self.device = "mps" if torch.backends.mps.is_available() else "cpu"
             
-        logger.info("Loading monocular depth estimation model '%s' on device '%s'...", self.model_path, self.device)
+        logger.info(
+            "Loading monocular depth estimation model '%s' (metric=%s) on device '%s'...",
+            self.model_path,
+            self.is_metric,
+            self.device
+        )
         start_time = time.time()
         try:
             self.processor = AutoImageProcessor.from_pretrained(self.model_path)
             self.model = AutoModelForDepthEstimation.from_pretrained(self.model_path).to(self.device)
-            # Put in eval mode
+            self.model.eval()
+            logger.info("Depth model loaded in %.2fs", time.time() - start_time)
         except Exception as e:
             logger.error("Failed to load depth model: %s. Disabling depth estimation.", e)
             self.enabled = False
@@ -141,11 +148,16 @@ class DepthEstimator:
             return None
             
         # Calculate median depth
-        median_val = np.median(crop)
+        median_val = float(np.median(crop))
         
-        # Depth Anything V2 predicts relative inverse depth (higher = closer, lower = further).
-        if median_val <= 1e-3:
+        if median_val <= 1e-3 or np.isnan(median_val) or np.isinf(median_val):
             return None
             
-        distance = self.scale_factor / float(median_val)
+        if self.is_metric:
+            # Direct physical metric depth prediction in meters
+            distance = median_val * self.scale_factor
+        else:
+            # Relative inverse depth (higher = closer, lower = further)
+            distance = self.scale_factor / median_val
+            
         return round(distance, 1)

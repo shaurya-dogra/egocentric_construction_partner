@@ -1,0 +1,230 @@
+"""Thread-Safe Bridge between Safety Copilot Computer Vision Pipeline and Web API."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import logging
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
+import cv2
+import numpy as np
+from PIL import Image
+
+logger = logging.getLogger("kaya.copilot_bridge")
+
+
+class CopilotBridge:
+    """Singleton bridge managing background SafetyCopilot execution and video streaming."""
+
+    _instance: Optional[CopilotBridge] = None
+
+    def __new__(cls) -> CopilotBridge:
+        if cls._instance is None:
+            cls._instance = super(CopilotBridge, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self) -> None:
+        if self._initialized:
+            return
+
+        self._initialized = True
+        self._lock = threading.Lock()
+        self._running = False
+        self._copilot_thread: Optional[threading.Thread] = None
+
+        # Live Frame State
+        self._latest_jpeg: Optional[bytes] = None
+        self._latest_raw_jpeg: Optional[bytes] = None
+        self._latest_timestamp: float = 0.0
+        self._fps: float = 0.0
+        self._tracked_count: int = 0
+        self._hazards_count: int = 0
+        self._active_objects_summary: List[str] = []
+
+        # Rolling 1-FPS Temporal Ring Buffer (for VLM questions)
+        self._temporal_ring_buffer: List[Tuple[bytes, float]] = []
+        self._max_temporal_seconds: float = 8.0
+        self._last_temporal_sample_time: float = 0.0
+
+        # Copilot instance reference
+        self.copilot_instance = None
+
+    def update_frame(
+        self,
+        display_frame: np.ndarray,
+        raw_frame: Optional[np.ndarray] = None,
+        frame_result: Any = None,
+        fps: float = 0.0
+    ) -> None:
+        """Called by SafetyCopilot on every processed frame."""
+        try:
+            # Encode annotated display frame to JPEG
+            _, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            jpeg_bytes = jpeg_buf.tobytes()
+
+            raw_jpeg_bytes = None
+            if raw_frame is not None:
+                _, raw_buf = cv2.imencode(".jpg", raw_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                raw_jpeg_bytes = raw_buf.tobytes()
+            else:
+                raw_jpeg_bytes = jpeg_bytes
+
+            now = time.time()
+
+            # Extract metrics from FrameResult
+            tracked_cnt = 0
+            hazards_cnt = 0
+            summary_list = []
+
+            if frame_result is not None:
+                tracked_objects = getattr(frame_result, "tracked_objects", {})
+                tracked_cnt = sum(1 for obj in tracked_objects.values() if getattr(obj, "is_active", True))
+                hazards = getattr(frame_result, "hazards", [])
+                hazards_cnt = len(hazards)
+
+                for obj in list(tracked_objects.values())[:6]:
+                    dist_str = f"{obj.distance_meters:.1f}m" if getattr(obj, "distance_meters", None) else ""
+                    summary_list.append(f"{obj.class_name} #{obj.track_id} {dist_str}".strip())
+
+            with self._lock:
+                self._latest_jpeg = jpeg_bytes
+                self._latest_raw_jpeg = raw_jpeg_bytes
+                self._latest_timestamp = now
+                self._fps = fps
+                self._tracked_count = tracked_cnt
+                self._hazards_count = hazards_cnt
+                self._active_objects_summary = summary_list
+
+                # Sample into temporal buffer at ~1 FPS
+                if now - self._last_temporal_sample_time >= 1.0:
+                    self._temporal_ring_buffer.append((jpeg_bytes, now))
+                    self._last_temporal_sample_time = now
+
+                    # Evict frames older than max_temporal_seconds
+                    cutoff = now - self._max_temporal_seconds
+                    self._temporal_ring_buffer = [
+                        (b, t) for b, t in self._temporal_ring_buffer if t >= cutoff
+                    ]
+
+        except Exception as e:
+            logger.debug(f"Error in CopilotBridge.update_frame: {e}")
+
+    def get_latest_jpeg(self) -> Optional[bytes]:
+        """Return the latest annotated frame JPEG bytes."""
+        with self._lock:
+            return self._latest_jpeg
+
+    def get_latest_temporal_frames(self, max_frames: int = 8) -> List[Tuple[bytes, str]]:
+        """Return recent chronological sequence of frames as (bytes, 'image/jpeg') tuples."""
+        with self._lock:
+            if not self._temporal_ring_buffer:
+                if self._latest_jpeg:
+                    return [(self._latest_jpeg, "image/jpeg")]
+                return []
+
+            selected = self._temporal_ring_buffer[-max_frames:]
+            return [(b, "image/jpeg") for b, _ in selected]
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return current status of the copilot bridge."""
+        with self._lock:
+            is_active = self._running and (time.time() - self._latest_timestamp < 3.0)
+            return {
+                "active": is_active,
+                "fps": round(self._fps, 1),
+                "tracked_count": self._tracked_count,
+                "hazards_count": self._hazards_count,
+                "objects_summary": self._active_objects_summary,
+                "buffer_frames_count": len(self._temporal_ring_buffer)
+            }
+
+    async def get_video_frame_stream(self):
+        """Async generator yielding MJPEG multipart stream chunks."""
+        boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+        blank_frame = None
+
+        while True:
+            jpeg = self.get_latest_jpeg()
+            if jpeg is None:
+                # If copilot is starting up, yield a clean placeholder frame
+                if blank_frame is None:
+                    img = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(
+                        img, "Initializing Safety Copilot...", (80, 240),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA
+                    )
+                    _, buf = cv2.imencode(".jpg", img)
+                    blank_frame = buf.tobytes()
+                jpeg = blank_frame
+
+            yield boundary + jpeg + b"\r\n"
+            await asyncio.sleep(0.033)  # ~30 FPS stream
+
+    def start_background_copilot(
+        self,
+        source: Any = 0,
+        config_path: str = "config.yaml"
+    ) -> None:
+        """Start SafetyCopilot in a dedicated background worker thread."""
+        if self._running:
+            logger.info("SafetyCopilot background worker is already running.")
+            return
+
+        def _worker():
+            try:
+                from main import load_config, SafetyCopilot
+                config = load_config(config_path)
+                copilot = SafetyCopilot(config)
+                self.copilot_instance = copilot
+
+                # Wire bridge hook into copilot loop
+                original_process_frame = copilot._process_frame
+
+                def _hooked_process_frame(frame, timestamp, frame_number):
+                    result = original_process_frame(frame, timestamp, frame_number)
+                    try:
+                        display_frame = copilot.overlay_renderer.render(frame, result)
+                        self.update_frame(
+                            display_frame=display_frame,
+                            raw_frame=frame,
+                            frame_result=result,
+                            fps=copilot._current_fps
+                        )
+                    except Exception as ex:
+                        logger.debug(f"Error rendering overlay for bridge: {ex}")
+                    return result
+
+                copilot._process_frame = _hooked_process_frame
+
+                self._running = True
+                logger.info("SafetyCopilot background engine started successfully.")
+                copilot.run(source=source, no_display=True, no_voice=False)
+
+            except Exception as e:
+                logger.error(f"Error in SafetyCopilot background worker: {e}")
+            finally:
+                self._running = False
+                logger.info("SafetyCopilot background worker stopped.")
+
+        self._copilot_thread = threading.Thread(
+            target=_worker,
+            name="SafetyCopilotWorker",
+            daemon=True
+        )
+        self._copilot_thread.start()
+
+    def stop(self) -> None:
+        """Stop background worker if active."""
+        self._running = False
+        if self.copilot_instance:
+            try:
+                self.copilot_instance.stop()
+            except Exception:
+                pass
+
+
+# Global singleton instance
+copilot_bridge = CopilotBridge()

@@ -7,7 +7,7 @@ bin/
 lib/
 include/
 
-# Python bytecode
+# Python bytecode & cache
 __pycache__/
 *.py[cod]
 *$py.class
@@ -40,17 +40,6 @@ test_videos/
 *.sqlite
 data/events.db
 *.log
-
-# Dynamic RAG indexes, raw documents, and blueprints
-data/indexes/*
-!data/indexes/.gitkeep
-data/blueprints/*
-!data/blueprints/.gitkeep
-!data/blueprints/rendered/
-data/blueprints/rendered/*
-!data/blueprints/rendered/.gitkeep
-data/documents/*
-!data/documents/.gitkeep
 
 # IDE and Editor files
 .vscode/

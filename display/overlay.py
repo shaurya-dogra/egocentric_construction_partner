@@ -77,33 +77,250 @@ _SIDE_COLORS = {
 
 # Class-name → BGR colour for bounding boxes
 _CLASS_COLORS: dict[str, tuple[int, int, int]] = {
+    # Persons & Vehicles
     "person": (0, 255, 0),
     "car": (255, 128, 0),
     "truck": (255, 128, 0),
     "forklift": (255, 128, 0),
-    "hardhat": (0, 200, 200),
-    "no-hardhat": (0, 0, 255),
-    "safety-vest": (0, 200, 200),
-    "no-safety-vest": (0, 0, 255),
-    "vest": (0, 200, 200),
-    "no-vest": (0, 0, 255),
-    "goggles": (0, 200, 200),
-    "no-goggles": (0, 0, 255),
-    "gloves": (0, 200, 200),
-    "no-gloves": (0, 0, 255),
-    "boots": (0, 200, 200),
-    "no-boots": (0, 0, 255),
-    "mask": (0, 200, 200),
-    "no-mask": (0, 0, 255),
-    "safety-cone": (0, 165, 255),
+    "excavator": (255, 140, 0),
+    "bulldozer": (255, 140, 0),
+    "backhoe_loader": (255, 140, 0),
+    "skid_steer_loader": (255, 140, 0),
+    "wheel_loader": (255, 140, 0),
+    "road_roller": (255, 140, 0),
+    "scissor_lift": (255, 140, 0),
+    "boom_lift": (255, 140, 0),
+    "concrete_pump_truck": (255, 128, 0),
+    "flatbed_trailer": (255, 128, 0),
+    "crane": (255, 128, 0),
+    "tower_crane": (255, 128, 0),
+    "mobile_crane": (255, 128, 0),
+    "cement_mixer": (255, 128, 0),
+    "concrete_mixer": (255, 128, 0),
+    "cement_mixer_truck": (255, 128, 0),
+    "dump_truck": (255, 128, 0),
+    "pickup_truck": (255, 128, 0),
+    "delivery_truck": (255, 128, 0),
     "machinery": (255, 128, 0),
-    "utility-pole": (255, 128, 0),
+    "utility_pole": (255, 128, 0),
+
+    # PPE OK / Missing
+    "hardhat": (0, 200, 200),
+    "hard_hat": (0, 200, 200),
+    "hard_hat_with_attached_radio": (0, 200, 200),
+    "safety_helmet": (0, 200, 200),
+    "no-hardhat": (0, 0, 255),
+    "no_hardhat": (0, 0, 255),
+    "vest": (0, 200, 200),
+    "safety_vest": (0, 200, 200),
+    "reflective_vest": (0, 200, 200),
+    "high_visibility_jacket": (0, 200, 200),
+    "no-vest": (0, 0, 255),
+    "no_vest": (0, 0, 255),
+    "goggles": (0, 200, 200),
+    "safety_goggles": (0, 200, 200),
+    "safety_glasses": (0, 200, 200),
+    "face_shield": (0, 200, 200),
+    "welding_helmet": (0, 200, 200),
+    "no-goggles": (0, 0, 255),
+    "no_goggles": (0, 0, 255),
+    "gloves": (0, 200, 200),
+    "work_gloves": (0, 200, 200),
+    "cut_resistant_gloves": (0, 200, 200),
+    "rubber_gloves": (0, 200, 200),
+    "no-gloves": (0, 0, 255),
+    "no_gloves": (0, 0, 255),
+    "boots": (0, 200, 200),
+    "safety_boots": (0, 200, 200),
+    "steel_toe_boots": (0, 200, 200),
+    "no-boots": (0, 0, 255),
+    "no_boots": (0, 0, 255),
+    "mask": (0, 200, 200),
+    "dust_mask": (0, 200, 200),
+    "respirator": (0, 200, 200),
+    "respirator_mask": (0, 200, 200),
+    "no-mask": (0, 0, 255),
+    "no_mask": (0, 0, 255),
+    "ear_protection": (0, 200, 200),
+    "ear_muffs": (0, 200, 200),
+    "ear_plugs": (0, 200, 200),
+    "knee_pads": (0, 200, 200),
+    "safety_harness": (0, 220, 220),
+    "fall_arrest_harness": (0, 220, 220),
+
+    # Hand & Power Tools
     "hammer": (180, 105, 255),
+    "claw_hammer": (180, 105, 255),
+    "sledgehammer": (180, 105, 255),
+    "rubber_mallet": (180, 105, 255),
     "drill": (0, 165, 255),
+    "cordless_drill": (0, 165, 255),
+    "power_drill": (0, 165, 255),
+    "impact_driver": (0, 165, 255),
     "saw": (147, 20, 255),
+    "circular_saw": (147, 20, 255),
+    "reciprocating_saw": (147, 20, 255),
+    "handsaw": (147, 20, 255),
+    "hand_saw": (147, 20, 255),
+    "hacksaw": (147, 20, 255),
+    "jigsaw": (147, 20, 255),
+    "table_saw": (147, 20, 255),
+    "miter_saw": (147, 20, 255),
+    "chainsaw": (147, 20, 255),
+    "angle_grinder": (0, 140, 255),
+    "bench_grinder": (0, 140, 255),
+    "rotary_hammer": (180, 105, 255),
+    "rotary_hammer_drill": (180, 105, 255),
+    "jackhammer": (180, 105, 255),
+    "nail_gun": (0, 215, 255),
+    "heat_gun": (0, 165, 255),
+    "soldering_iron": (255, 69, 0),
+    "welding_machine": (255, 69, 0),
+    "welding_torch": (255, 69, 0),
+    "belt_sander": (0, 165, 255),
+    "orbital_sander": (0, 165, 255),
+    "power_sander": (0, 165, 255),
+    "air_compressor": (100, 149, 237),
+    "pressure_washer": (100, 149, 237),
     "measuring_tape": (238, 130, 238),
+    "spirit_level": (50, 205, 50),
+    "level": (50, 205, 50),
+    "screwdriver": (255, 191, 0),
+    "phillips_screwdriver": (255, 191, 0),
+    "wrench": (255, 140, 0),
+    "adjustable_wrench": (255, 140, 0),
+    "pipe_wrench": (255, 140, 0),
+    "socket_wrench": (255, 140, 0),
+    "socket_wrench_set": (255, 140, 0),
+    "allen_key_set": (255, 140, 0),
+    "pliers": (218, 112, 214),
+    "needle_nose_pliers": (218, 112, 214),
+    "wire_cutters": (218, 112, 214),
+    "bolt_cutter": (218, 112, 214),
+    "bolt_cutters": (218, 112, 214),
+    "pipe_cutter": (218, 112, 214),
+    "staple_gun": (218, 112, 214),
+    "c_clamp": (218, 112, 214),
+    "chisel": (255, 165, 0),
+    "hand_file": (205, 133, 63),
+    "putty_knife": (205, 133, 63),
+    "hand_trowel": (205, 133, 63),
+    "pry_bar": (205, 133, 63),
+    "crowbar": (205, 133, 63),
+    "utility_knife": (0, 69, 255),
+    "knife": (0, 69, 255),
+    "scissors": (255, 105, 180),
+    "toolbox": (128, 0, 128),
+    "tool_cart": (128, 0, 128),
+    "storage_bin": (128, 0, 128),
+    "tool": (200, 150, 255),
+    "power_tool": (200, 150, 255),
+
+    # Site Infrastructure & Access
+    "step_ladder": (255, 215, 0),
+    "extension_ladder": (255, 215, 0),
+    "ladder": (255, 215, 0),
+    "scaffolding": (255, 165, 0),
+    "scaffold_platform": (255, 165, 0),
+    "barricade": (0, 165, 255),
+    "safety_cone": (0, 165, 255),
+    "caution_tape": (0, 255, 255),
+    "guardrail": (0, 165, 255),
+    "warning_sign": (0, 255, 255),
+    "asbestos_warning_sign": (0, 0, 255),
+    "safety_barrier": (0, 165, 255),
+    "temporary_railing": (0, 165, 255),
+    "bucket": (255, 192, 203),
+    "wheelbarrow": (205, 133, 63),
+    "dumpster": (128, 128, 128),
+    "dolly_cart": (205, 133, 63),
+    "workbench": (139, 69, 19),
+    "work_platform": (255, 165, 0),
+    "shipping_container": (70, 130, 180),
+    "port_a_potty": (70, 130, 180),
+
+    # Hazards & Materials
+    "exposed_wire": (0, 0, 255),
+    "loose_cable": (0, 0, 255),
+    "electrical_cable": (30, 144, 255),
+    "extension_cord": (0, 165, 255),
+    "extension_cord_reel": (0, 165, 255),
+    "power_strip": (0, 165, 255),
+    "electrical_panel": (255, 215, 0),
+    "electrical_outlet": (255, 215, 0),
+    "circuit_breaker": (255, 215, 0),
+    "gas_cylinder": (0, 69, 255),
+    "propane_cylinder": (0, 69, 255),
+    "propane_tank": (0, 69, 255),
+    "fire_extinguisher": (0, 0, 255),
+    "spill": (0, 0, 255),
+    "puddle": (0, 0, 255),
+    "spill_puddle": (0, 0, 255),
+    "chemical_container": (0, 0, 255),
+    "open_manhole": (0, 0, 255),
+    "sharp_metal_shard": (0, 0, 255),
+    "debris_pile": (128, 128, 128),
+    "sandbag": (189, 183, 107),
+    "cinder_block": (169, 169, 169),
+    "concrete_block": (169, 169, 169),
+    "concrete_slab": (169, 169, 169),
+    "brick": (178, 34, 34),
+    "rebar": (192, 192, 192),
+    "metal_pipe": (192, 192, 192),
+    "steel_pipe": (192, 192, 192),
+    "wooden_plank": (139, 69, 19),
+    "lumber_stack": (139, 69, 19),
+    "plywood_sheet": (139, 69, 19),
+    "metal_sheet": (192, 192, 192),
+    "glass_sheet": (224, 255, 255),
+    "wooden_pallet": (139, 69, 19),
+    "pallet": (139, 69, 19),
+    "paint_can": (255, 20, 147),
+    "oil_container": (255, 140, 0),
+
+    # Common Workplace Items
+    "cell_phone": (255, 255, 0),
+    "two_way_radio": (255, 255, 0),
+    "laptop": (0, 255, 255),
+    "tablet": (0, 255, 255),
+    "clipboard": (255, 215, 0),
+    "notebook": (255, 255, 255),
+    "pen": (255, 255, 0),
+    "water_bottle": (255, 200, 100),
+    "coffee_cup": (255, 200, 100),
+    "bottle": (255, 200, 100),
+    "cup": (255, 200, 100),
+    "lunch_box": (255, 165, 0),
+    "backpack": (100, 200, 255),
+    "folding_chair": (180, 180, 180),
+    "chair": (180, 180, 180),
+    "desk": (139, 69, 19),
+    "storage_cabinet": (169, 169, 169),
+    "first_aid_kit": (0, 255, 0),
+    "trash_can": (128, 128, 128),
+    "trash_bin": (128, 128, 128),
+    "broom": (210, 180, 140),
+    "dustpan": (210, 180, 140),
 }
 _DEFAULT_CLASS_COLOR = (200, 200, 200)
+
+_TOOL_CLASSES = frozenset({
+    "hammer", "claw_hammer", "sledgehammer", "rubber_mallet",
+    "drill", "cordless_drill", "power_drill", "impact_driver",
+    "saw", "circular_saw", "reciprocating_saw", "handsaw", "hand_saw", "hacksaw", "jigsaw",
+    "table_saw", "miter_saw", "chainsaw",
+    "angle_grinder", "bench_grinder", "rotary_hammer", "rotary_hammer_drill", "jackhammer",
+    "nail_gun", "heat_gun", "soldering_iron", "welding_torch",
+    "belt_sander", "orbital_sander", "power_sander",
+    "measuring_tape", "spirit_level", "level",
+    "screwdriver", "phillips_screwdriver",
+    "wrench", "adjustable_wrench", "pipe_wrench", "socket_wrench", "socket_wrench_set", "allen_key_set",
+    "pliers", "needle_nose_pliers", "wire_cutters", "bolt_cutter", "bolt_cutters", "pipe_cutter", "staple_gun",
+    "c_clamp", "chisel", "hand_file", "putty_knife", "hand_trowel", "pry_bar", "crowbar",
+    "utility_knife", "knife", "scissors",
+    "flashlight", "shovel", "toolbox", "tool_cart", "tool", "power_tool", "bucket",
+    "two_way_radio", "broom", "dustpan",
+})
 
 # Hazard state → border BGR colour
 _STATE_COLORS: dict[HazardState, tuple[int, int, int]] = {
@@ -202,25 +419,38 @@ class OverlayRenderer:
             obj for obj in result.tracked_objects.values()
             if obj.class_name == "person" and obj.is_active
         ]
-        tools = [
-            obj for obj in result.tracked_objects.values()
-            if obj.class_name in ("hammer", "drill", "saw", "measuring_tape") and obj.is_active
-        ]
+        if not workers:
+            return
+
+        # Gather tools from tracked objects or active tool detections
+        tool_targets: list[tuple[int, int]] = []
+        for obj in result.tracked_objects.values():
+            if obj.class_name in _TOOL_CLASSES and obj.is_active:
+                tool_targets.append((int(obj.center[0]), int(obj.center[1])))
+
+        # Also check detections if tracked_objects did not capture them
+        if not tool_targets:
+            for det in result.detections:
+                if det.class_name in _TOOL_CLASSES:
+                    tool_targets.append(det.center)
+
+        if not tool_targets:
+            return
+
         poses_by_track = {pose.person_track_id: pose for pose in result.poses}
 
         for worker in workers:
             pose = poses_by_track.get(worker.track_id)
             if not pose or pose.keypoints is None or len(pose.keypoints) < 11:
                 continue
-            for tool in tools:
+            for tx, ty in tool_targets:
                 for index in (KEYPOINT_LEFT_WRIST, KEYPOINT_RIGHT_WRIST):
                     if index < len(pose.keypoints):
                         wrist = pose.keypoints[index]
                         if len(wrist) >= 3 and wrist[2] >= 0.2:
-                            dist = math.hypot(tool.center[0] - wrist[0], tool.center[1] - wrist[1])
-                            if dist <= 120:
+                            dist = math.hypot(tx - wrist[0], ty - wrist[1])
+                            if dist <= 140:
                                 wx, wy = int(wrist[0]), int(wrist[1])
-                                tx, ty = int(tool.center[0]), int(tool.center[1])
                                 # Draw a violet line from hand to tool
                                 cv2.line(frame, (wx, wy), (tx, ty), (238, 130, 238), 2, cv2.LINE_AA)
                                 cv2.putText(
@@ -228,7 +458,7 @@ class OverlayRenderer:
                                     "carrying",
                                     (int((wx + tx) / 2), int((wy + ty) / 2) - 5),
                                     cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.35,
+                                    0.4,
                                     (238, 130, 238),
                                     1,
                                     cv2.LINE_AA,

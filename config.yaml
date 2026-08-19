@@ -1,5 +1,5 @@
 # ============================================================
-# Job Site Safety Copilot — Tier 1 Configuration
+# Job Site Safety Copilot — Configuration
 # ============================================================
 
 perspective: "egocentric"       # "third_person" | "egocentric"
@@ -7,44 +7,174 @@ perspective: "egocentric"       # "third_person" | "egocentric"
 # --- Model Paths & Thresholds ---
 models:
   general:
-    path: null                  # Disabled: Rely entirely on consolidated model below
-    confidence: 0.40
-    iou: 0.50
-    classes: null               # null = all COCO classes; list IDs to filter
+    path: "yolo11n.pt"           # High-speed COCO object detector (person, vehicles, tools, items)
+    confidence: 0.30
+    iou: 0.45
+    classes: null               # null = all COCO classes
   ppe:
-    # Pretrained PPE model:
-    # 1. Roboflow ID: "ppe-detection-qlq3d/1" (Requires api_key)
-    # 2. Hugging Face: "hf:yihong1120/Construction-Hazard-Detection:models/yolo26/pt/yolo26n.pt" (Zero setup)
+    # Pretrained PPE model: Hugging Face yolo26n
     path: "hf:yihong1120/Construction-Hazard-Detection:models/yolo26/pt/yolo26n.pt"
-    api_key: "N3msO9LsV6MgzZpFDe0D" # Required if path is a Roboflow model ID
-    confidence: 0.35
+    api_key: "N3msO9LsV6MgzZpFDe0D"
+    confidence: 0.30
     iou: 0.45
   pose:
-    path: "yolo26n-pose.pt"     # COCO keypoints (auto-downloads)
+    path: "yolo26n-pose.pt"     # COCO keypoints
     confidence: 0.40
     run_every_n_frames: 3       # Pose runs every Nth frame to save compute
   tool:
     enabled: true
-    path: "yolov8s-worldv2.pt"
-    confidence: 0.25
+    path: "yolov8s-worldv2.pt"   # YOLO-World open-vocabulary tool detector
+    confidence: 0.20            # Tuned for high recall on construction and hand tools
     iou: 0.45
     classes:
-      - "hammer"
-      - "drill"
-      - "saw"
+      # ---------------- Hand Tools ----------------
+      - "claw hammer"
+      - "rubber mallet"
+      - "screwdriver"
+      - "adjustable wrench"
+      - "socket wrench set"
+      - "pliers"
+      - "wire cutters"
+      - "utility knife"
+      - "hand saw"
+      - "hacksaw"
       - "measuring tape"
+      - "spirit level"
+      - "chisel"
+      - "hand file"
+      - "allen key set"
+      - "c-clamp"
+      - "pipe wrench"
+      - "putty knife"
+      - "hand trowel"
+      - "staple gun"
+      - "crowbar"
+      - "bolt cutters"
+
+      # ---------------- Power Tools & Equipment ----------------
+      - "cordless drill"
+      - "impact driver"
+      - "angle grinder"
+      - "circular saw"
+      - "reciprocating saw"
+      - "jigsaw"
+      - "table saw"
+      - "miter saw"
+      - "belt sander"
+      - "orbital sander"
+      - "nail gun"
+      - "jackhammer"
+      - "rotary hammer drill"
+      - "heat gun"
+      - "soldering iron"
+      - "bench grinder"
+      - "air compressor"
+      - "pressure washer"
+      - "chainsaw"
+      - "welding machine"
+      - "welding torch"
+      - "extension cord reel"
+      - "power strip"
+
+      # ---------------- Personal Protective Equipment (PPE) ----------------
+      - "hard hat"
+      - "safety vest"
+      - "safety glasses"
+      - "safety goggles"
+      - "face shield"
+      - "ear muffs"
+      - "ear plugs"
+      - "dust mask"
+      - "respirator mask"
+      - "work gloves"
+      - "cut-resistant gloves"
+      - "safety boots"
+      - "steel-toe boots"
+      - "knee pads"
+      - "safety harness"
+      - "welding helmet"
+      - "high-visibility jacket"
+
+      # ---------------- Site Infrastructure & Access ----------------
+      - "step ladder"
+      - "extension ladder"
+      - "scaffolding"
+      - "safety cone"
+      - "barricade"
+      - "caution tape"
+      - "guardrail"
+      - "warning sign"
+      - "toolbox"
+      - "tool cart"
+      - "storage bin"
+      - "bucket"
+      - "wheelbarrow"
+      - "dumpster"
+      - "dolly cart"
+      - "workbench"
+      - "shipping container"
+      - "port-a-potty"
+
+      # ---------------- Heavy Machinery & Vehicles ----------------
+      - "forklift"
+      - "excavator"
+      - "bulldozer"
+      - "backhoe loader"
+      - "cement mixer"
+      - "crane"
+      - "dump truck"
+      - "pickup truck"
+      - "skid steer loader"
+      - "road roller"
+      - "scissor lift"
+      - "boom lift"
+      - "concrete pump truck"
+      - "flatbed trailer"
+
+      # ---------------- Materials & Potential Hazards ----------------
+      - "exposed wire"
+      - "cinder block"
+      - "rebar"
+      - "gas cylinder"
+      - "propane tank"
+      - "fire extinguisher"
+      - "wooden pallet"
+      - "spill puddle"
+      - "sandbag"
+      - "lumber stack"
+      - "metal pipe"
+      - "concrete slab"
+      - "electrical panel"
+      - "open manhole"
+      - "debris pile"
+      - "sharp metal shard"
+      - "asbestos warning sign"
+
+      # ---------------- Common Everyday Workplace Objects ----------------
+      - "cell phone"
+      - "laptop"
+      - "clipboard"
+      - "water bottle"
+      - "backpack"
+      - "hard hat with attached radio"
+      - "two-way radio"
+      - "lunch box"
+      - "first aid kit"
+      - "coffee cup"
+      - "folding chair"
+      - "trash can"
+      - "broom"
+      - "dustpan"
   depth:
     enabled: true
-    path: "depth-anything/Depth-Anything-V2-Small-hf"
+    path: "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf"
     confidence: 0.40
     run_every_n_frames: 3
-    scale_factor: 15.0
-
+    is_metric: true
+    scale_factor: 1.0
 # --- Compute Device ---
 device:
-  preferred: "auto"             # auto | mps | cpu
-                                # auto = try MPS first, fall back to CPU
-                                # On macOS 26 Tahoe: MPS smoke test catches regression
+  preferred: "auto"             # auto | mps | cpu (auto uses Apple Silicon MPS if available)
 
 # --- Video Capture ---
 capture:
@@ -54,95 +184,47 @@ capture:
 
 # --- Multi-Object Tracking ---
 tracking:
-  tracker: "bytetrack.yaml"              # ByteTrack for high-speed tracking (no ReID model overhead)
+  tracker: "bytetrack.yaml"     # High-speed ByteTrack
   persist: true                 # Maintain IDs across frames
 
-# --- Attention / Escalation Logic (the novel piece) ---
+# --- Attention / Escalation Logic ---
 escalation:
   dwell_threshold_seconds: 4.0           # Time before escalation begins
-  gaze_angle_tolerance_degrees: 45.0     # ±degrees from hazard bearing to count as "looking"
+  gaze_angle_tolerance_degrees: 45.0     # ±degrees from hazard bearing to count as looking
   escalation_cooldown_seconds: 10.0      # Don't re-escalate same hazard within this window
-  acknowledgment_gaze_duration_seconds: 0.5  # Must look for this long to count as acknowledged
+  acknowledgment_gaze_duration_seconds: 0.5
 
 # --- Fall Detection ---
 fall_detection:
   body_angle_threshold_degrees: 30.0     # Below this = horizontal posture
   velocity_threshold_px_per_frame: 15.0  # Rapid vertical drop
-  confirmation_frames: 2                 # Both signals must agree for N frames
-  alert_cooldown_seconds: 15.0           # Don't re-alert same person within this window
+  confirmation_frames: 2                 # Both signals must agree
+  alert_cooldown_seconds: 15.0
 
 # --- PPE ---
 ppe:
-  standalone_alert: false       # PPE state NEVER triggers alerts alone
-                                # It only modulates severity of other hazards
+  standalone_alert: false       # Modulates severity of other hazards
 
 # --- Voice Alerts (TTS) ---
 alerts:
   enabled: true
-  voice: "Samantha"             # macOS system voice (run `say -v ?` to list)
+  voice: "Samantha"             # macOS system voice
   rates:
-    calm: 160                   # Words per minute by severity
+    calm: 160
     normal: 180
     urgent: 220
     critical: 240
-  cooldown_seconds: 5.0         # Min gap between repeated alerts for same hazard
-  max_concurrent: 1             # Max simultaneous TTS processes
+  cooldown_seconds: 5.0
+  max_concurrent: 1
 
 # --- Event Logging ---
 logging:
   database_path: "data/events.db"
-  log_level: "INFO"             # DEBUG | INFO | WARNING | ERROR
+  log_level: "INFO"
 
-# --- VLM Integration (Part 2) ---
+# --- VLM Integration ---
 vlm:
   enabled: true
-  backend: "ollama"             # "ollama" (Local Ollama Gemma 4) | "gemini" | "groq" | "fastvlm" | "moondream"
-  api_url: "http://localhost:11434/api/chat"
-  model: "gemma4:cloud"           # Local Ollama multimodal reasoning model
-  api_key: null
-  background_polling: true      # Runs asynchronously via Ollama HTTP API without holding PyTorch GPU
-  fps: 0.25                     # Scene reasoning every ~4s in background thread
-  moondream:                      # Settings for the on-device Moondream2 backend
-    model_id: "vikhyatk/moondream2"
-    revision: null                # Pin a specific revision e.g. "2025-06-21" for reproducibility
-    device: "auto"                # auto | mps | cpu | cuda
-    dtype: "float16"              # float16 | float32 (bfloat16 not supported on MPS)
-    max_image_size: 448           # Max dimension for input images sent to Moondream
-  fastvlm:                        # Settings for the on-device FastVLM backend
-    model_id: "apple/FastVLM-0.5B"
-    device: "auto"                # auto | mps | cpu | cuda
-    dtype: "float16"              # float16 | float32
-    max_image_size: 448           # Max dimension for input images sent to FastVLM
-  system_prompt: >
-    You are a construction-site reasoning assistant.
-    Prefer the structured scene graph and session memory over free-form guessing.
-    If retrieved documents are provided, ground answers in them and label any inference beyond them.
-  reasoning:
-    reason_every_seconds: 4.0
-    state_change_cooldown_seconds: 1.5
-    memory_items: 200
-    checklist_hold_frames: 6
-    expected_items: []
-    scene_graph:
-      tool_labels: ["cell_phone", "drill", "hammer", "saw", "measuring_tape", "tool"]
-      structure_labels: ["scaffold", "beam", "column", "wall", "door", "window", "ladder"]
-    documents:
-      directory: "data/documents"
-      index_path: "data/indexes/documents_index.json"
-      embedding_model: "nomic-embed-text"
-      embed_api_url: "http://localhost:11434/api/embed"
-      force_embeddings: false
-      direct_doc_limit: 6
-      direct_char_limit: 48000
-      top_k: 4
-    blueprints:
-      directory: "data/blueprints"
-      render_directory: "data/blueprints/rendered"
-      max_pdf_pages: 2
-    spatial_memory:
-      grid_rows: 3
-      grid_cols: 3
-      history_limit: 200
 
 # --- Display / Overlay ---
 display:
@@ -153,21 +235,15 @@ display:
   show_alert_banner: true
   show_track_ids: true
   window_name: "Safety Copilot"
-  bbox_colors:                  # BGR format for OpenCV
+  bbox_colors:
     person: [0, 255, 0]        # Green
     vehicle: [0, 255, 255]     # Yellow
     ppe_ok: [0, 200, 0]        # Dark green
     ppe_missing: [0, 0, 255]   # Red
     hazard: [0, 0, 255]        # Red
     zone: [0, 165, 255]        # Orange
-  zone_alpha: 0.25              # Transparency for zone overlays
+  zone_alpha: 0.25
 
 # --- Danger Zones ---
-# Zones can also be loaded from JSON files in data/zones/
 zones:
   default: []
-  # Example zone definition:
-  # - name: "Electrical Panel"
-  #   zone_type: "electrical"
-  #   polygon: [[100, 200], [300, 200], [300, 400], [100, 400]]
-  #   severity_base: "danger"
