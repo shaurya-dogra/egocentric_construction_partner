@@ -424,52 +424,48 @@ class OverlayRenderer:
         return out
 
     def _render_pose_3d(self, frame: np.ndarray, result: FrameResult) -> np.ndarray:
-        """Render 3D Pose skeletons with 3D eye gaze vectors and posture cues."""
+        """Render 3D Pose skeletons on a pure black canvas — no video overlay."""
         h, w = frame.shape[:2]
-        # Darkened ambient background for high-contrast luminous skeleton HUD
-        out = cv2.addWeighted(frame, 0.45, np.zeros_like(frame), 0.55, 0)
+        # Pure black background — skeleton only, no video
+        out = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # Draw 17-keypoint skeletons & 3D eye gaze projections
         for pose in result.poses:
             if pose.keypoints is None or len(pose.keypoints) < 17:
                 continue
 
-            # Draw glowing skeleton
             self._draw_skeleton(out, pose.keypoints)
 
-            # 3D Eye View & Perspective Gaze Cone
+            # Gaze cone & direction badge
             if len(pose.keypoints) > KEYPOINT_NOSE:
                 nx, ny, nc = pose.keypoints[KEYPOINT_NOSE]
                 if nc >= 0.25 and pose.head_yaw is not None:
                     yaw_deg = int(pose.head_yaw - 90)
                     dir_str = "Ahead" if abs(yaw_deg) < 15 else ("Right" if yaw_deg > 0 else "Left")
                     angle_rad = math.radians(pose.head_yaw)
-                    
+
                     ray_len = 110
                     ex = int(nx + ray_len * math.cos(angle_rad))
                     ey = int(ny - ray_len * math.sin(angle_rad))
 
-                    # 3D perspective gaze cone
+                    # Gaze cone fill
                     if len(pose.keypoints) > KEYPOINT_RIGHT_EYE:
                         lx, ly, lc = pose.keypoints[KEYPOINT_LEFT_EYE]
                         rx, ry, rc = pose.keypoints[KEYPOINT_RIGHT_EYE]
                         if lc >= 0.2 and rc >= 0.2:
                             cone_overlay = out.copy()
                             pts = np.array([[int(lx), int(ly)], [int(rx), int(ry)], [ex, ey]], dtype=np.int32)
-                            cv2.fillPoly(cone_overlay, [pts], (0, 255, 255))
-                            cv2.addWeighted(cone_overlay, 0.22, out, 0.78, 0, out)
+                            cv2.fillPoly(cone_overlay, [pts], (0, 200, 200))
+                            cv2.addWeighted(cone_overlay, 0.3, out, 0.7, 0, out)
 
-                    # Gaze central vector with depth tick marks
+                    # Gaze ray
                     cv2.line(out, (int(nx), int(ny)), (ex, ey), (0, 255, 255), 2, cv2.LINE_AA)
                     for t in (0.35, 0.70, 1.0):
                         tx = int(nx + t * ray_len * math.cos(angle_rad))
                         ty = int(ny - t * ray_len * math.sin(angle_rad))
                         cv2.circle(out, (tx, ty), 3 if t < 1.0 else 6, (0, 255, 255), -1)
-
-                    # Target reticle
                     cv2.circle(out, (ex, ey), 10, (0, 255, 255), 1, cv2.LINE_AA)
 
-                    # Head Orientation Badge
+                    # Badge
                     tid = f"Worker #{pose.person_track_id}" if pose.person_track_id else "Worker"
                     posture = "Upright"
                     if pose.body_angle is not None:
@@ -479,7 +475,6 @@ class OverlayRenderer:
                             posture = "Crouched"
                         else:
                             posture = f"Upright ({int(pose.body_angle)}°)"
-
                     badge_text = f"{tid} | Gaze: {dir_str} ({abs(yaw_deg)}°) | {posture}"
                     bx = max(10, int(nx - 80))
                     by = max(30, int(ny - 35))
@@ -488,81 +483,64 @@ class OverlayRenderer:
                     cv2.rectangle(out, (bx - 4, by - th - 6), (bx + tw + 6, by + 4), (0, 255, 255), 1)
                     cv2.putText(out, badge_text, (bx, by - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA)
 
-        # Mode Banner Top Left
-        self._draw_mode_banner(out, "👁️ 3D POSE & EYE VIEW", (0, 255, 255))
+        if not result.poses:
+            cv2.putText(out, "No person detected", (w // 2 - 100, h // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 80, 80), 1, cv2.LINE_AA)
+
+        self._draw_mode_banner(out, "3D POSE", (0, 255, 255))
         if self.show_fps:
             self._draw_fps(out, result.fps)
         return out
 
     def _render_depth_3d(self, frame: np.ndarray, result: FrameResult) -> np.ndarray:
-        """Render 3D Gradient Depth Colormap with isolines and metric distance pins."""
+        """Render pure 2D TURBO gradient depth map — no video blend, just the colormap."""
         h, w = frame.shape[:2]
         dmap = getattr(result, "depth_map", None)
 
         if dmap is not None and isinstance(dmap, np.ndarray) and dmap.size > 0:
-            # Resize depth map if needed
+            # Resize to match frame if needed
             if dmap.shape[:2] != (h, w):
-                dmap_resized = cv2.resize(dmap, (w, h), interpolation=cv2.INTER_LINEAR)
+                dmap_resized = cv2.resize(dmap.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
             else:
-                dmap_resized = dmap
+                dmap_resized = dmap.astype(np.float32)
 
-            # Normalize metric depth (0.5m to 12.0m)
+            # Normalize metric depth 0.5m → 12.0m to 0–255 (TURBO: blue=near, red=far)
             norm_d = np.clip((dmap_resized - 0.5) / 11.5, 0.0, 1.0)
             u8_d = (norm_d * 255).astype(np.uint8)
-            depth_colored = cv2.applyColorMap(u8_d, cv2.COLORMAP_TURBO)
-
-            # Blend with 3D structural edges
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 40, 120)
-            depth_colored[edges > 0] = (255, 255, 255)
-            out = cv2.addWeighted(depth_colored, 0.85, frame, 0.15, 0)
+            # Pure colormap — no blending with original frame
+            out = cv2.applyColorMap(u8_d, cv2.COLORMAP_TURBO)
         else:
-            # Fallback gradient preview
+            # Fallback: show a horizontal gradient so you can see the colormap is live
             grad = np.linspace(0, 255, w, dtype=np.uint8)
             grad_img = np.tile(grad, (h, 1))
-            depth_colored = cv2.applyColorMap(grad_img, cv2.COLORMAP_TURBO)
-            out = cv2.addWeighted(depth_colored, 0.70, frame, 0.30, 0)
+            out = cv2.applyColorMap(grad_img, cv2.COLORMAP_TURBO)
 
-        # Draw 3D Depth Grid lines
-        for y_line in range(60, h, 90):
-            cv2.line(out, (0, y_line), (w - 50, y_line), (80, 80, 80), 1, cv2.LINE_AA)
-        for x_line in range(80, w - 50, 120):
-            cv2.line(out, (x_line, 0), (x_line, h), (80, 80, 80), 1, cv2.LINE_AA)
+        # Thin depth scale bar on right edge
+        bar_x = w - 30
+        bar_h = h - 60
+        for y_offset in range(bar_h):
+            val = int(255 * (y_offset / bar_h))
+            color_cell = cv2.applyColorMap(np.array([[val]], dtype=np.uint8), cv2.COLORMAP_TURBO)[0, 0]
+            cv2.line(out, (bar_x, 30 + y_offset), (bar_x + 14, 30 + y_offset),
+                     (int(color_cell[0]), int(color_cell[1]), int(color_cell[2])), 1)
+        cv2.rectangle(out, (bar_x - 1, 29), (bar_x + 15, 30 + bar_h), (255, 255, 255), 1)
+        cv2.putText(out, "0.5m", (bar_x - 30, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(out, "12m", (bar_x - 28, 26 + bar_h), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # Overlay 3D Metric Coordinate Pins at tracked object centers
+        # Distance pins for tracked objects
         for obj in result.tracked_objects.values():
             if not obj.is_active:
                 continue
             cx, cy = int(obj.center[0]), int(obj.center[1])
             dist_val = obj.distance_meters
-            dist_str = f"{dist_val:.1f}m" if dist_val is not None else "Depth Active"
+            dist_str = f"{dist_val:.1f}m" if dist_val is not None else "?"
+            tag = f"{obj.class_name} [{dist_str}]"
+            (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+            cv2.rectangle(out, (cx + 8, cy - th - 4), (cx + tw + 14, cy + 4), (0, 0, 0), -1)
+            cv2.putText(out, tag, (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.circle(out, (cx, cy), 3, (255, 255, 255), -1)
 
-            # Draw Crosshair Pin
-            cv2.line(out, (cx - 12, cy), (cx + 12, cy), (0, 255, 255), 1, cv2.LINE_AA)
-            cv2.line(out, (cx, cy - 12), (cx, cy + 12), (0, 255, 255), 1, cv2.LINE_AA)
-            cv2.circle(out, (cx, cy), 6, (0, 255, 255), 1, cv2.LINE_AA)
-
-            tag = f"⌖ {obj.class_name} #{obj.track_id} [{dist_str}]"
-            (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
-            cv2.rectangle(out, (cx + 10, cy - th - 4), (cx + tw + 18, cy + 6), (10, 10, 10), -1)
-            cv2.rectangle(out, (cx + 10, cy - th - 4), (cx + tw + 18, cy + 6), (0, 255, 255), 1)
-            cv2.putText(out, tag, (cx + 14, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
-
-        # Draw Vertical Depth Scale Bar on right edge
-        bar_x = w - 35
-        bar_h = h - 80
-        for y_offset in range(bar_h):
-            val = int(255 * (y_offset / bar_h))
-            color_cell = cv2.applyColorMap(np.array([[val]], dtype=np.uint8), cv2.COLORMAP_TURBO)[0, 0]
-            b, g, r = int(color_cell[0]), int(color_cell[1]), int(color_cell[2])
-            cv2.line(out, (bar_x, 40 + y_offset), (bar_x + 18, 40 + y_offset), (b, g, r), 1)
-
-        cv2.rectangle(out, (bar_x - 1, 39), (bar_x + 19, 40 + bar_h), (255, 255, 255), 1)
-        cv2.putText(out, "0.5m", (bar_x - 36, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(out, "12m+", (bar_x - 36, 35 + bar_h), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
-
-        # Mode Banner
-        self._draw_mode_banner(out, "🌊 3D GRADIENT DEPTH MAP (Depth-Anything-V2)", (0, 215, 255))
+        self._draw_mode_banner(out, "DEPTH MAP", (0, 215, 255))
         if self.show_fps:
             self._draw_fps(out, result.fps)
         return out
