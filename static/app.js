@@ -187,6 +187,7 @@ async function submitVoice() {
     const data = await res.json();
 
     if (data.transcript) userRow.querySelector('.bubble').textContent = `🎙️ "${data.transcript}"`;
+
     addAssistantMsg(data, Date.now() - t0);
   } catch (err) {
     toast(err.message, 'error');
@@ -308,30 +309,32 @@ function addMsg(role, text) {
 }
 
 function addAssistantMsg(data, elapsed) {
-  const text = data.answer || data.text || data.response || 'No response.';
+  // The API returns: response, audio_base64, timings.{stt_ms, vision_ms, tts_ms}
+  const text = data.response || data.answer || data.text || 'No response.';
   const row = addMsg('kaya', text);
   const meta = row.querySelector('.msg-meta');
 
-  // Latency pills
-  [['STT', data.stt_ms], ['VLM', data.vlm_ms], ['TTS', data.tts_ms]].forEach(([label, val]) => {
+  // Latency pills — from nested timings object
+  const t = data.timings || {};
+  [['STT', t.stt_ms], ['VLM', t.vision_ms], ['TTS', t.tts_ms]].forEach(([label, val]) => {
     if (val == null) return;
     const p = document.createElement('span');
     p.className = 'lat-pill';
     p.textContent = `${label}: ${Math.round(val)}ms`;
     meta.appendChild(p);
   });
-  if (!data.stt_ms && !data.vlm_ms && elapsed) {
+  if (!t.stt_ms && !t.vision_ms && elapsed) {
     const p = document.createElement('span');
     p.className = 'lat-pill';
     p.textContent = `${Math.round(elapsed)}ms`;
     meta.appendChild(p);
   }
 
-  // Audio replay + autoplay
-  if (data.audio_b64 || data.audio_url) {
+  // Audio replay + autoplay — API returns audio_base64 (WAV from Sarvam TTS)
+  const audiob64 = data.audio_base64;
+  if (audiob64) {
     const getAudio = () => {
-      if (data.audio_url) return new Audio(data.audio_url);
-      return new Audio(`data:${data.audio_mime || 'audio/mpeg'};base64,${data.audio_b64}`);
+      return new Audio(`data:audio/wav;base64,${audiob64}`);
     };
 
     const btn = document.createElement('button');
@@ -340,12 +343,12 @@ function addAssistantMsg(data, elapsed) {
     btn.onclick = () => getAudio().play().catch(() => {});
     meta.appendChild(btn);
 
-    // Autoplay
+    // Autoplay TTS
     showHUD('speaking');
     const audio = getAudio();
     audio.onended = hideHUD;
-    audio.onerror = hideHUD;
-    audio.play().catch(hideHUD);
+    audio.onerror = () => { console.warn('TTS audio play error'); hideHUD(); };
+    audio.play().catch(err => { console.warn('TTS autoplay blocked:', err); hideHUD(); });
   }
 
   scrollDown();
