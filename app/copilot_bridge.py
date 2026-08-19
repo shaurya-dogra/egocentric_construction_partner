@@ -163,6 +163,52 @@ class CopilotBridge:
             selected = self._temporal_ring_buffer[-max_frames:]
             return [(b, "image/jpeg") for b, _ in selected]
 
+    def get_latest_pose_data(self) -> Dict[str, Any]:
+        """Return latest pose keypoints + sampled depth values for the 3D viewer."""
+        with self._lock:
+            result = self._latest_result
+            dmap = self._latest_depth_map
+
+        if result is None:
+            return {"poses": [], "frame_width": 1280, "frame_height": 720}
+
+        poses_out = []
+        poses = getattr(result, "poses", []) or []
+        for pose in poses:
+            kps = pose.keypoints
+            if kps is None or len(kps) < 17:
+                continue
+            kp_list = []
+            for idx, (x, y, conf) in enumerate(kps):
+                # Sample depth at this keypoint if map available
+                depth_val = None
+                if dmap is not None and isinstance(dmap, np.ndarray):
+                    h_d, w_d = dmap.shape[:2]
+                    px = int(min(max(x, 0), w_d - 1))
+                    py = int(min(max(y, 0), h_d - 1))
+                    raw = float(dmap[py, px])
+                    if raw > 0.01:
+                        depth_val = round(raw, 3)
+                kp_list.append({
+                    "x": round(float(x), 1),
+                    "y": round(float(y), 1),
+                    "conf": round(float(conf), 3),
+                    "depth": depth_val,
+                })
+            poses_out.append({
+                "track_id": pose.person_track_id,
+                "keypoints": kp_list,
+                "head_yaw": pose.head_yaw,
+                "body_angle": pose.body_angle,
+            })
+
+        return {
+            "poses": poses_out,
+            "frame_width": 1280,
+            "frame_height": 720,
+        }
+
+
     def get_status(self) -> Dict[str, Any]:
         """Return current status of the copilot bridge."""
         with self._lock:

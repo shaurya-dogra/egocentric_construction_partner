@@ -98,6 +98,12 @@ async def video_feed(mode: str = "all"):
     )
 
 
+@app.get("/api/pose")
+async def get_pose_data():
+    """Return latest pose keypoints and depth map as JSON for the 3D pose viewer."""
+    return copilot_bridge.get_latest_pose_data()
+
+
 @app.get("/api/status")
 async def get_status():
     """Get system health, provider metadata, copilot metrics, and temporal buffer settings."""

@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Kaya — Job Site Safety Copilot</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <!-- Three.js for 3D pose viewer -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- HuggingFace Transformers for browser-side WebGPU depth inference -->
+  <script type="importmap">
+  {
+    "imports": {
+      "@huggingface/transformers": "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.2/dist/transformers.min.js"
+    }
+  }
+  </script>
 </head>
 <body>
   <div class="app-container">
@@ -29,19 +39,15 @@
       </div>
 
       <div class="header-right">
-        <!-- Frame mode -->
         <div class="frame-mode-toggle" id="frameModeToggle">
           <button class="mode-tab-btn active" id="btnModeTemporal">🎞️ Temporal</button>
           <button class="mode-tab-btn" id="btnModeSingle">🖼️ Single Frame</button>
         </div>
-
-        <!-- Provider badges -->
         <div class="provider-badges">
           <span class="badge badge-vision"><span class="badge-dot"></span><span id="pillVisionLabel">Vision: Gemini</span></span>
           <span class="badge badge-stt"><span class="badge-dot"></span><span id="pillSTTLabel">STT: Gemini</span></span>
           <span class="badge badge-tts"><span class="badge-dot"></span><span id="pillTTSLabel">TTS: Sarvam</span></span>
         </div>
-
         <button class="btn-reset" id="btnReset">↺ Reset</button>
       </div>
     </header>
@@ -57,6 +63,8 @@
             <span class="tel-pill objects" id="telObjects">0 objects</span>
             <span class="tel-pill hazards" id="telHazards">0 hazards</span>
             <span class="tel-pill fps" id="telFps">-- fps</span>
+            <!-- Depth inference stats (shown only in depth mode) -->
+            <span class="tel-pill hidden" id="telDepthStats" style="color:#7c3aed;background:#faf5ff;border-color:#e9d5ff;">WebGPU Depth</span>
           </div>
         </div>
 
@@ -70,28 +78,38 @@
           <button class="view-tab" data-mode="objects">🔨 Objects</button>
         </div>
 
-        <!-- Video -->
-        <div class="video-viewport">
+        <!-- Video stage — only one is visible at a time -->
+        <div class="video-viewport" id="videoViewport">
+
+          <!-- MJPEG stream (all / raw / ppe / objects modes) -->
           <img id="videoFeed" src="/api/video_feed?mode=all" class="stream-img" alt="Live stream" />
-          <video id="cameraVideo" class="hidden" autoplay playsinline muted></video>
-          <canvas id="snapCanvas" class="hidden"></canvas>
+
+          <!-- Browser-side WebGPU depth canvas (shown in depth mode) -->
+          <canvas id="depthCanvas" class="stream-img hidden" style="background:#000;"></canvas>
+          <!-- Loading state shown while depth model downloads -->
+          <div id="depthLoadingOverlay" class="hidden" style="
+            position:absolute;inset:0;background:rgba(0,0,0,0.85);
+            display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#fff;
+          ">
+            <div style="font-size:13px;font-weight:600;" id="depthLoadMsg">Initializing WebGPU Depth Pipeline...</div>
+            <div style="width:200px;height:4px;background:#333;border-radius:4px;overflow:hidden;">
+              <div id="depthProgressBar" style="height:100%;width:0%;background:#6366f1;transition:width 0.3s;"></div>
+            </div>
+          </div>
+
+          <!-- Three.js 3D pose canvas (shown in pose mode) -->
+          <canvas id="poseCanvas" class="stream-img hidden"></canvas>
 
           <!-- HUD overlays -->
           <div class="video-hud">
-            <div class="hud-pill hud-listening hidden" id="hudListening">
-              <span class="hud-dot"></span> Listening...
-            </div>
-            <div class="hud-pill hud-thinking hidden" id="hudThinking">
-              <span class="spinner"></span> Thinking...
-            </div>
-            <div class="hud-pill hud-speaking hidden" id="hudSpeaking">
-              🔊 Speaking...
-            </div>
+            <div class="hud-pill hud-listening hidden" id="hudListening"><span class="hud-dot"></span> Listening...</div>
+            <div class="hud-pill hud-thinking hidden" id="hudThinking"><span class="spinner"></span> Thinking...</div>
+            <div class="hud-pill hud-speaking hidden" id="hudSpeaking">🔊 Speaking...</div>
           </div>
         </div>
 
         <div class="video-footer">
-          <span class="engine-info">YOLO11 · YOLO-World · Depth Anything V2 · YOLO-Pose</span>
+          <span class="engine-info" id="engineInfo">YOLO11 · YOLO-World · Depth Anything V2 · YOLO-Pose</span>
           <button class="btn-sm" id="btnReconnect">↺ Reconnect</button>
         </div>
       </section>
@@ -103,7 +121,6 @@
           <span class="msg-count" id="msgCount">0 messages</span>
         </div>
 
-        <!-- Quick chips -->
         <div class="chips-bar">
           <button class="chip" data-query="Are all workers wearing hardhats and safety vests?">🦺 Check PPE</button>
           <button class="chip" data-query="What tools and equipment are visible and how far are they?">🔨 Tool Distances</button>
@@ -111,7 +128,6 @@
           <button class="chip" data-query="Summarize what happened in the last few seconds.">🎞️ Temporal Summary</button>
         </div>
 
-        <!-- Feed -->
         <div class="conv-feed" id="convFeed">
           <div class="welcome-card" id="welcomeCard">
             <div class="icon">🏗️</div>
@@ -119,13 +135,12 @@
             <p>Ask questions about the job site using voice or text.</p>
             <div class="hints">
               <div class="hint-row">🎙️ Hold <kbd>Space</kbd> or click Push to Talk to speak</div>
-              <div class="hint-row">🎞️ Analyzes the last 6 seconds of video automatically</div>
-              <div class="hint-row">📏 Estimates distance to every person and object</div>
+              <div class="hint-row">🌊 Depth tab runs live WebGPU inference in your browser</div>
+              <div class="hint-row">👁️ 3D Pose tab shows skeleton in a real 3D scene</div>
             </div>
           </div>
         </div>
 
-        <!-- Input area -->
         <div class="chat-input">
           <button class="btn-ptt" id="btnPTT" title="Hold to record. Release to send.">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -138,13 +153,7 @@
           </button>
 
           <form class="text-form" id="textForm">
-            <input
-              type="text"
-              class="text-input"
-              id="textInput"
-              placeholder="Ask about the job site..."
-              autocomplete="off"
-            />
+            <input type="text" class="text-input" id="textInput" placeholder="Ask about the job site..." autocomplete="off" />
             <button type="submit" class="btn-send" id="btnSend">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="22" y1="2" x2="11" y2="13"/>
@@ -160,6 +169,6 @@
     <div class="toast-container" id="toastContainer"></div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script type="module" src="/static/app.js"></script>
 </body>
 </html>
