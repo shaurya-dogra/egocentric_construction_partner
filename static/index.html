@@ -3,279 +3,163 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Kaya — Job Site Safety Copilot & Voice+Vision Assistant</title>
-  
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  
-  <!-- Stylesheet -->
+  <title>Kaya — Job Site Safety Copilot</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <div class="app-container">
-    
-    <!-- Top Navigation Header -->
+
+    <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand-badge">
-          <div class="brand-icon">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-              <line x1="12" y1="19" x2="12" y2="22"></line>
-            </svg>
+        <div class="brand-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="22"/>
+          </svg>
+        </div>
+        <div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="brand-title">Kaya Copilot</span>
+            <span class="live-dot"></span>
           </div>
-          <div class="brand-titles">
-            <div class="brand-row">
-              <h1 class="brand-title">Kaya Copilot</h1>
-              <span class="live-pill"><span class="live-dot"></span> LIVE EDGE AI</span>
-            </div>
-            <p class="brand-tagline">Real-Time Computer Vision & Multimodal Safety Assistant</p>
-          </div>
+          <div class="brand-tagline">Real-Time Job Site Safety AI</div>
         </div>
       </div>
 
       <div class="header-right">
-        <!-- Temporal Frame Mode Selector -->
-        <div class="frame-mode-toggle" id="frameModeToggleGroup">
-          <button type="button" class="mode-tab-btn active" id="btnModeTemporal" title="Rolling 6-8s chronological frame sequence for dynamic scene reasoning">
-            <span class="btn-emoji">🎞️</span> Temporal (6s)
-          </button>
-          <button type="button" class="mode-tab-btn" id="btnModeSingle" title="Single camera frame snapshot mode">
-            <span class="btn-emoji">🖼️</span> Single Frame
-          </button>
+        <!-- Frame mode -->
+        <div class="frame-mode-toggle" id="frameModeToggle">
+          <button class="mode-tab-btn active" id="btnModeTemporal">🎞️ Temporal</button>
+          <button class="mode-tab-btn" id="btnModeSingle">🖼️ Single Frame</button>
         </div>
 
-        <!-- Provider Status Badges -->
+        <!-- Provider badges -->
         <div class="provider-badges">
-          <div class="badge badge-vision" id="pillVision" title="Active Vision Reasoner Model">
-            <span class="badge-dot"></span>
-            <span class="badge-text" id="pillVisionLabel">Vision: Gemini 3.5</span>
-          </div>
-          <div class="badge badge-stt" id="pillSTT" title="Active Speech-to-Text Provider">
-            <span class="badge-dot"></span>
-            <span class="badge-text" id="pillSTTLabel">STT: Gemini</span>
-          </div>
-          <div class="badge badge-tts" id="pillTTS" title="Active Text-to-Speech Engine">
-            <span class="badge-dot"></span>
-            <span class="badge-text" id="pillTTSLabel">TTS: Sarvam</span>
-          </div>
+          <span class="badge badge-vision"><span class="badge-dot"></span><span id="pillVisionLabel">Vision: Gemini</span></span>
+          <span class="badge badge-stt"><span class="badge-dot"></span><span id="pillSTTLabel">STT: Gemini</span></span>
+          <span class="badge badge-tts"><span class="badge-dot"></span><span id="pillTTSLabel">TTS: Sarvam</span></span>
         </div>
 
-        <!-- Reset Button -->
-        <button type="button" class="btn-action-icon" id="btnResetContext" title="Clear Conversation Context">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-            <path d="M3 3v5h5"></path>
-          </svg>
-          <span>Reset</span>
-        </button>
+        <button class="btn-reset" id="btnReset">↺ Reset</button>
       </div>
     </header>
 
-    <!-- Main Workspace (Side-by-Side Grid) -->
+    <!-- Main -->
     <main class="main-layout">
-      
-      <!-- ========================================================
-           LEFT PANEL: Computer Vision Live Stream & Mode Switcher
-           ======================================================== -->
-      <section class="panel video-panel">
+
+      <!-- Left: Video -->
+      <section class="video-panel">
         <div class="panel-header">
-          <div class="panel-title-area">
-            <span class="pulse-indicator"></span>
-            <h2 class="panel-heading">Edge Vision Stream</h2>
-          </div>
+          <span class="panel-title">Live Stream</span>
           <div class="stream-telemetry">
-            <span class="telemetry-pill objects-pill" id="trackedCountTag" title="Active Tracked Objects">● 0 Objects</span>
-            <span class="telemetry-pill hazards-pill" id="hazardsCountTag" title="Active Safety Hazards">● 0 Hazards</span>
-            <span class="telemetry-pill buffer-pill" id="bufferStatusTag" title="Temporal Buffer Frame Count">● Buffer: 6/8</span>
-            <span class="telemetry-pill fps-pill" id="copilotFpsTag" title="Real-Time Processing FPS">30.0 FPS</span>
+            <span class="tel-pill objects" id="telObjects">0 objects</span>
+            <span class="tel-pill hazards" id="telHazards">0 hazards</span>
+            <span class="tel-pill fps" id="telFps">-- fps</span>
           </div>
         </div>
 
-        <!-- Real-Time View Mode Tabs Bar -->
+        <!-- View mode tabs -->
         <div class="view-mode-nav" id="viewModeNav">
-          <button type="button" class="view-tab active" data-mode="all" title="Full Combined Copilot HUD (YOLO + Tools + PPE + 3D Pose + Depth)">
-            <span class="tab-icon">🎯</span>
-            <span class="tab-name">Combined HUD</span>
-          </button>
-          <button type="button" class="view-tab" data-mode="raw" title="Pristine raw camera feed with zero overlays">
-            <span class="tab-icon">📹</span>
-            <span class="tab-name">Normal Video</span>
-          </button>
-          <button type="button" class="view-tab" data-mode="pose" title="17-Keypoint skeletons with 3D eye gaze cones and posture angles">
-            <span class="tab-icon">👁️</span>
-            <span class="tab-name">3D Pose & Gaze</span>
-          </button>
-          <button type="button" class="view-tab" data-mode="depth" title="3D Gradient TURBO Depth Colormap with metric distance tags">
-            <span class="tab-icon">🌊</span>
-            <span class="tab-name">3D Gradient Depth</span>
-          </button>
-          <button type="button" class="view-tab" data-mode="ppe" title="PPE Compliance audit view (Hardhats, Vests, Missing Gear warnings)">
-            <span class="tab-icon">🦺</span>
-            <span class="tab-name">PPE Only</span>
-          </button>
-          <button type="button" class="view-tab" data-mode="objects" title="Objects & Tools only (Heavy machinery, drills, saws, carrying links)">
-            <span class="tab-icon">🔨</span>
-            <span class="tab-name">Objects & Tools</span>
-          </button>
+          <button class="view-tab active" data-mode="all">🎯 Combined</button>
+          <button class="view-tab" data-mode="raw">📹 Normal</button>
+          <button class="view-tab" data-mode="pose">👁️ 3D Pose</button>
+          <button class="view-tab" data-mode="depth">🌊 Depth</button>
+          <button class="view-tab" data-mode="ppe">🦺 PPE</button>
+          <button class="view-tab" data-mode="objects">🔨 Objects</button>
         </div>
 
-        <!-- Video Viewport Stage -->
+        <!-- Video -->
         <div class="video-viewport">
-          <!-- Live MJPEG Stream from SafetyCopilot Engine -->
-          <img id="copilotVideoFeed" src="/api/video_feed?mode=all" class="stream-element" alt="Kaya Live Vision Stream" />
-          
-          <!-- Fallback local elements for testing -->
+          <img id="videoFeed" src="/api/video_feed?mode=all" class="stream-img" alt="Live stream" />
           <video id="cameraVideo" class="hidden" autoplay playsinline muted></video>
-          <canvas id="snapshotCanvas" class="hidden"></canvas>
-          <canvas id="samplerCanvas" class="hidden"></canvas>
+          <canvas id="snapCanvas" class="hidden"></canvas>
 
-          <!-- Interactive Video State HUD Overlay -->
-          <div class="video-hud-overlay">
-            <div class="hud-pill hud-listening hidden" id="statusListening">
-              <span class="pulse-ring"></span>
-              <span>Listening to Voice...</span>
+          <!-- HUD overlays -->
+          <div class="video-hud">
+            <div class="hud-pill hud-listening hidden" id="hudListening">
+              <span class="hud-dot"></span> Listening...
             </div>
-            <div class="hud-pill hud-thinking hidden" id="statusThinking">
-              <span class="spinner-icon"></span>
-              <span>Reasoning with Vision AI...</span>
+            <div class="hud-pill hud-thinking hidden" id="hudThinking">
+              <span class="spinner"></span> Thinking...
             </div>
-            <div class="hud-pill hud-speaking hidden" id="statusSpeaking">
-              <div class="sound-wave-bars">
-                <span></span><span></span><span></span><span></span>
-              </div>
-              <span>Speaking Response...</span>
+            <div class="hud-pill hud-speaking hidden" id="hudSpeaking">
+              🔊 Speaking...
             </div>
           </div>
         </div>
 
-        <!-- Video Footer Controls & Engine Summary -->
         <div class="video-footer">
-          <div class="engine-summary">
-            <span class="status-badge-active">● Active Models:</span>
-            <span class="engine-chips">YOLO11 • YOLO-World (125 Classes) • Depth Anything V2 • YOLO-Pose</span>
-          </div>
-          <div class="footer-actions">
-            <button type="button" class="btn-footer" id="btnRefreshFeed" title="Reconnect Video Stream">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                <path d="M23 4v6h-6"></path>
-                <path d="M1 20v-6h6"></path>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-              </svg>
-              <span>Reconnect</span>
-            </button>
-          </div>
+          <span class="engine-info">YOLO11 · YOLO-World · Depth Anything V2 · YOLO-Pose</span>
+          <button class="btn-sm" id="btnReconnect">↺ Reconnect</button>
         </div>
       </section>
 
-      <!-- ========================================================
-           RIGHT PANEL: Voice & Vision Multimodal Copilot
-           ======================================================== -->
-      <section class="panel chat-panel">
-        <div class="panel-header">
-          <div class="panel-title-area">
-            <div class="assistant-sparkle">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
-              </svg>
-            </div>
-            <h2 class="panel-heading">Job Site Voice Copilot</h2>
-          </div>
-          <div class="chat-header-actions">
-            <span class="history-pill" id="historyCounter">0 messages</span>
-          </div>
+      <!-- Right: Chat -->
+      <section class="chat-panel">
+        <div class="chat-header">
+          <span class="panel-title">Ask Kaya</span>
+          <span class="msg-count" id="msgCount">0 messages</span>
         </div>
 
-        <!-- Quick Question Suggestions -->
-        <div class="prompt-chips-bar">
-          <button type="button" class="chip-btn" data-query="Are all workers wearing required hardhats and safety vests?">🦺 Check PPE</button>
-          <button type="button" class="chip-btn" data-query="What tools and equipment are in the scene and how far are they?">🔨 Tool Distances</button>
-          <button type="button" class="chip-btn" data-query="Are there any unnoticed hazards or tripping risks in the area?">⚠️ Hazard Scan</button>
-          <button type="button" class="chip-btn" data-query="Summarize what happened across the last few seconds.">🎞️ Temporal Summary</button>
+        <!-- Quick chips -->
+        <div class="chips-bar">
+          <button class="chip" data-query="Are all workers wearing hardhats and safety vests?">🦺 Check PPE</button>
+          <button class="chip" data-query="What tools and equipment are visible and how far are they?">🔨 Tool Distances</button>
+          <button class="chip" data-query="Are there any hazards or tripping risks in the area?">⚠️ Hazard Scan</button>
+          <button class="chip" data-query="Summarize what happened in the last few seconds.">🎞️ Temporal Summary</button>
         </div>
 
-        <!-- Scrollable Conversation Feed -->
-        <div class="conversation-feed" id="conversationFeed">
-          
-          <!-- Welcome Empty State Card -->
-          <div class="welcome-card" id="feedEmptyState">
-            <div class="welcome-icon">🏗️</div>
-            <h3 class="welcome-title">Welcome to Kaya Safety Copilot</h3>
-            <p class="welcome-desc">
-              Your real-time edge partner for construction safety, tool tracking, and multimodal reasoning.
-            </p>
-            <div class="welcome-features">
-              <div class="feature-item">
-                <span class="feat-icon">🎙️</span>
-                <span>Hold <kbd>Space</kbd> or click <strong>Push to Talk</strong> to ask questions.</span>
-              </div>
-              <div class="feature-item">
-                <span class="feat-icon">🎞️</span>
-                <span>Analyzes rolling <strong>6-8s temporal sequences</strong> to track dynamic events.</span>
-              </div>
-              <div class="feature-item">
-                <span class="feat-icon">📏</span>
-                <span>Estimates <strong>metric distance in meters</strong> to every person and object.</span>
-              </div>
+        <!-- Feed -->
+        <div class="conv-feed" id="convFeed">
+          <div class="welcome-card" id="welcomeCard">
+            <div class="icon">🏗️</div>
+            <h3>Kaya Safety Copilot</h3>
+            <p>Ask questions about the job site using voice or text.</p>
+            <div class="hints">
+              <div class="hint-row">🎙️ Hold <kbd>Space</kbd> or click Push to Talk to speak</div>
+              <div class="hint-row">🎞️ Analyzes the last 6 seconds of video automatically</div>
+              <div class="hint-row">📏 Estimates distance to every person and object</div>
             </div>
           </div>
-
         </div>
 
-        <!-- Bottom Input & Push-to-Talk Interaction Area -->
-        <div class="chat-input-container">
-          
-          <!-- Push to Talk Button -->
-          <div class="ptt-row">
-            <button type="button" class="btn-push-to-talk" id="btnPushToTalk" title="Click and hold to speak, or hold the Space bar">
-              <div class="ptt-icon-wrap">
-                <svg class="mic-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-                  <line x1="12" y1="19" x2="12" y2="22"></line>
-                </svg>
-                <div class="ptt-waves">
-                  <span></span><span></span><span></span>
-                </div>
-              </div>
-              <div class="ptt-label-area">
-                <span class="ptt-primary-label" id="pttMainText">Push to Talk</span>
-                <span class="ptt-sub-label">Hold <kbd>Space</kbd> or click to speak</span>
-              </div>
-            </button>
-          </div>
+        <!-- Input area -->
+        <div class="chat-input">
+          <button class="btn-ptt" id="btnPTT" title="Hold to record. Release to send.">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="22"/>
+            </svg>
+            <span id="pttLabel">Push to Talk</span>
+            <kbd>Space</kbd>
+          </button>
 
-          <!-- Text Input Form -->
-          <form class="text-input-form" id="textQueryForm">
-            <input 
-              type="text" 
-              class="text-input-field" 
-              id="inputQueryText" 
-              placeholder="Ask Kaya about the job site (e.g. 'Is the worker looking at the forklift?')..." 
+          <form class="text-form" id="textForm">
+            <input
+              type="text"
+              class="text-input"
+              id="textInput"
+              placeholder="Ask about the job site..."
               autocomplete="off"
             />
-            <button type="submit" class="btn-submit-query" id="btnSubmitText" title="Send Question">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            <button type="submit" class="btn-send" id="btnSend">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"/>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
               </svg>
             </button>
           </form>
-
         </div>
       </section>
 
     </main>
 
-    <!-- Toast Notification Overlay -->
     <div class="toast-container" id="toastContainer"></div>
-
   </div>
 
-  <!-- Main JavaScript Application Script -->
   <script src="/static/app.js"></script>
 </body>
 </html>

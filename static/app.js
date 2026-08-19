@@ -1,632 +1,372 @@
 /**
  * Kaya — Job Site Safety Copilot
- * Client-Side Application Script
- * ---------------------------------
- * Handles:
- *  - Real-time view mode tab switching (MJPEG stream query param)
- *  - Frame mode toggle (Temporal / Single Frame)
- *  - Push-to-Talk via MediaRecorder + Space key hold/release
- *  - Text query submission via /api/ask-text
- *  - Voice query submission via /api/ask
- *  - Quick suggestion chip auto-submit
- *  - Chat message rendering with latency pills & audio replay
- *  - Status polling (/api/status) every 2 seconds
- *  - Toast notifications
- *  - Context reset via /api/reset
+ * Clean, simple client script
  */
 
-// =============================================================================
-// DOM References
-// =============================================================================
+// DOM
+const videoFeed     = document.getElementById('videoFeed');
+const viewModeNav   = document.getElementById('viewModeNav');
+const frameModeToggle = document.getElementById('frameModeToggle');
+const btnModeTemporal = document.getElementById('btnModeTemporal');
+const btnModeSingle   = document.getElementById('btnModeSingle');
+const btnReset      = document.getElementById('btnReset');
+const btnReconnect  = document.getElementById('btnReconnect');
 
-const videoFeed         = document.getElementById('copilotVideoFeed');
-const viewModeNav       = document.getElementById('viewModeNav');
-const frameModeGroup    = document.getElementById('frameModeToggleGroup');
-const btnModeTemporal   = document.getElementById('btnModeTemporal');
-const btnModeSingle     = document.getElementById('btnModeSingle');
-const btnResetContext   = document.getElementById('btnResetContext');
-const btnRefreshFeed    = document.getElementById('btnRefreshFeed');
+const telObjects    = document.getElementById('telObjects');
+const telHazards    = document.getElementById('telHazards');
+const telFps        = document.getElementById('telFps');
+const pillVisionLabel = document.getElementById('pillVisionLabel');
+const pillSTTLabel  = document.getElementById('pillSTTLabel');
+const pillTTSLabel  = document.getElementById('pillTTSLabel');
+const msgCount      = document.getElementById('msgCount');
 
-// Status telemetry
-const trackedCountTag   = document.getElementById('trackedCountTag');
-const hazardsCountTag   = document.getElementById('hazardsCountTag');
-const bufferStatusTag   = document.getElementById('bufferStatusTag');
-const copilotFpsTag     = document.getElementById('copilotFpsTag');
-const pillVisionLabel   = document.getElementById('pillVisionLabel');
-const pillSTTLabel      = document.getElementById('pillSTTLabel');
-const pillTTSLabel      = document.getElementById('pillTTSLabel');
-const historyCounter    = document.getElementById('historyCounter');
+const hudListening  = document.getElementById('hudListening');
+const hudThinking   = document.getElementById('hudThinking');
+const hudSpeaking   = document.getElementById('hudSpeaking');
 
-// HUD overlays
-const statusListening   = document.getElementById('statusListening');
-const statusThinking    = document.getElementById('statusThinking');
-const statusSpeaking    = document.getElementById('statusSpeaking');
+const convFeed      = document.getElementById('convFeed');
+const welcomeCard   = document.getElementById('welcomeCard');
+const textForm      = document.getElementById('textForm');
+const textInput     = document.getElementById('textInput');
+const btnSend       = document.getElementById('btnSend');
+const btnPTT        = document.getElementById('btnPTT');
+const pttLabel      = document.getElementById('pttLabel');
+const toastContainer = document.getElementById('toastContainer');
 
-// Chat panel
-const conversationFeed  = document.getElementById('conversationFeed');
-const feedEmptyState    = document.getElementById('feedEmptyState');
-const textQueryForm     = document.getElementById('textQueryForm');
-const inputQueryText    = document.getElementById('inputQueryText');
-const btnSubmitText     = document.getElementById('btnSubmitText');
-const btnPushToTalk     = document.getElementById('btnPushToTalk');
-const pttMainText       = document.getElementById('pttMainText');
-const toastContainer    = document.getElementById('toastContainer');
+// State
+let currentMode   = 'all';
+let frameMode     = 'TEMPORAL_FRAMES';
+let msgTotal      = 0;
+let isRecording   = false;
+let isProcessing  = false;
+let mediaRecorder = null;
+let audioChunks   = [];
+let audioStream   = null;
 
-// Quick chips
-const chipBtns          = document.querySelectorAll('.chip-btn');
+// ── View mode switching ───────────────────────────────────────────
 
-// =============================================================================
-// Application State
-// =============================================================================
-
-let currentMode     = 'all';   // Active video stream mode
-let frameMode       = 'TEMPORAL_FRAMES'; // API frame_mode param
-let messageCount    = 0;
-let isRecording     = false;
-let isProcessing    = false;
-
-// MediaRecorder state
-let mediaRecorder   = null;
-let audioChunks     = [];
-let audioStream     = null;
-
-// Playback
-let lastAudioBlob   = null;
-let latestAudioEl   = null;
-
-// Status polling
-let statusInterval  = null;
-
-// =============================================================================
-// View Mode Tab Switching
-// =============================================================================
-
-viewModeNav.addEventListener('click', (e) => {
+viewModeNav.addEventListener('click', e => {
   const tab = e.target.closest('.view-tab');
   if (!tab) return;
-
-  const newMode = tab.dataset.mode;
-  if (newMode === currentMode) return;
-
-  // Update active tab
+  const mode = tab.dataset.mode;
+  if (mode === currentMode) return;
   document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
   tab.classList.add('active');
-
-  // Switch the MJPEG stream
-  currentMode = newMode;
-  refreshVideoStream();
+  currentMode = mode;
+  reloadStream();
 });
 
-function refreshVideoStream() {
+function reloadStream() {
   videoFeed.src = `/api/video_feed?mode=${currentMode}&t=${Date.now()}`;
 }
 
-// Reconnect button
-btnRefreshFeed.addEventListener('click', () => {
-  refreshVideoStream();
-  showToast('🔄 Stream reconnected', 'success');
-});
+btnReconnect.addEventListener('click', () => { reloadStream(); toast('Stream reconnected'); });
+videoFeed.addEventListener('error', () => setTimeout(reloadStream, 3000));
 
-// =============================================================================
-// Frame Mode Toggle (Temporal vs. Single Frame)
-// =============================================================================
+// ── Frame mode toggle ─────────────────────────────────────────────
 
-frameModeGroup.addEventListener('click', (e) => {
+frameModeToggle.addEventListener('click', e => {
   const btn = e.target.closest('.mode-tab-btn');
   if (!btn) return;
-
   document.querySelectorAll('.mode-tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-
-  if (btn.id === 'btnModeTemporal') {
-    frameMode = 'TEMPORAL_FRAMES';
-    showToast('🎞️ Temporal 6s mode active', 'success');
-  } else {
-    frameMode = 'SINGLE_FRAME';
-    showToast('🖼️ Single frame mode active');
-  }
+  frameMode = btn.id === 'btnModeTemporal' ? 'TEMPORAL_FRAMES' : 'SINGLE_FRAME';
 });
 
-// =============================================================================
-// Status Polling
-// =============================================================================
-
-function startStatusPolling() {
-  pollStatus(); // Immediate first call
-  statusInterval = setInterval(pollStatus, 2000);
-}
+// ── Status polling ────────────────────────────────────────────────
 
 async function pollStatus() {
   try {
     const res = await fetch('/api/status');
     if (!res.ok) return;
-    const data = await res.json();
+    const d = await res.json();
+    const c = d.copilot || {};
+    const p = d.providers || {};
 
-    const copilot = data.copilot || {};
-    const config  = data.config  || {};
-    const providers = data.providers || {};
+    const obj = c.tracked_count ?? c.objects_count ?? 0;
+    const haz = c.hazard_count ?? 0;
+    const fps = Number(c.fps ?? 0).toFixed(1);
 
-    // Telemetry pills
-    const objCount = copilot.tracked_count ?? copilot.objects_count ?? 0;
-    const hazCount = copilot.hazard_count  ?? 0;
-    const fps      = copilot.fps           ?? 0;
-    const bufCurr  = copilot.buffer_count  ?? copilot.frame_count ?? 0;
-    const bufMax   = copilot.buffer_max    ?? 8;
+    telObjects.textContent = `${obj} object${obj !== 1 ? 's' : ''}`;
+    telHazards.textContent = `${haz} hazard${haz !== 1 ? 's' : ''}`;
+    telFps.textContent     = `${fps} fps`;
 
-    trackedCountTag.textContent = `● ${objCount} Object${objCount !== 1 ? 's' : ''}`;
-    hazardsCountTag.textContent = `● ${hazCount} Hazard${hazCount !== 1 ? 's' : ''}`;
-    bufferStatusTag.textContent = `● Buffer: ${bufCurr}/${bufMax}`;
-    copilotFpsTag.textContent   = `${Number(fps).toFixed(1)} FPS`;
+    if (p.vision) pillVisionLabel.textContent = `Vision: ${p.vision.split(':')[0]}`;
+    if (p.stt)    pillSTTLabel.textContent    = `STT: ${p.stt}`;
+    if (p.tts)    pillTTSLabel.textContent    = `TTS: ${p.tts}`;
 
-    // Provider badges
-    if (providers.vision) {
-      const parts = providers.vision.split(':');
-      pillVisionLabel.textContent = `Vision: ${parts[0]}`;
-    }
-    if (providers.stt) {
-      pillSTTLabel.textContent = `STT: ${providers.stt}`;
-    }
-    if (providers.tts) {
-      pillTTSLabel.textContent = `TTS: ${providers.tts}`;
-    }
-
-    // History counter
-    const turns = data.history_turns ?? 0;
-    historyCounter.textContent = `${turns} message${turns !== 1 ? 's' : ''}`;
-
-  } catch (_) {
-    // Network error — silently ignore
-  }
+    const turns = d.history_turns ?? 0;
+    msgCount.textContent = `${turns} message${turns !== 1 ? 's' : ''}`;
+  } catch (_) {}
 }
 
-// =============================================================================
-// HUD State Helpers
-// =============================================================================
+pollStatus();
+setInterval(pollStatus, 2000);
+
+// ── HUD helpers ───────────────────────────────────────────────────
 
 function showHUD(state) {
-  statusListening.classList.add('hidden');
-  statusThinking.classList.add('hidden');
-  statusSpeaking.classList.add('hidden');
-
-  if (state === 'listening') statusListening.classList.remove('hidden');
-  else if (state === 'thinking') statusThinking.classList.remove('hidden');
-  else if (state === 'speaking') statusSpeaking.classList.remove('hidden');
+  hudListening.classList.add('hidden');
+  hudThinking.classList.add('hidden');
+  hudSpeaking.classList.add('hidden');
+  if (state === 'listening') hudListening.classList.remove('hidden');
+  if (state === 'thinking')  hudThinking.classList.remove('hidden');
+  if (state === 'speaking')  hudSpeaking.classList.remove('hidden');
 }
 
 function hideHUD() {
-  statusListening.classList.add('hidden');
-  statusThinking.classList.add('hidden');
-  statusSpeaking.classList.add('hidden');
+  hudListening.classList.add('hidden');
+  hudThinking.classList.add('hidden');
+  hudSpeaking.classList.add('hidden');
 }
 
-// =============================================================================
-// Push-to-Talk Logic
-// =============================================================================
+// ── Push-to-Talk ──────────────────────────────────────────────────
 
-async function ensureAudioStream() {
+function mimeType() {
+  for (const t of ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
+async function getStream() {
   if (!audioStream || audioStream.getTracks().every(t => t.readyState === 'ended')) {
     audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   }
   return audioStream;
 }
 
-function getMimeType() {
-  const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
-  for (const t of types) {
-    if (MediaRecorder.isTypeSupported(t)) return t;
-  }
-  return '';
-}
-
-async function startRecording() {
+async function startRec() {
   if (isRecording || isProcessing) return;
-
   try {
-    const stream = await ensureAudioStream();
-    const mimeType = getMimeType();
-    const options = mimeType ? { mimeType } : {};
-
-    mediaRecorder = new MediaRecorder(stream, options);
+    const stream = await getStream();
+    const mime = mimeType();
+    mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
     audioChunks = [];
-
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) audioChunks.push(e.data);
-    };
-
-    mediaRecorder.start(100); // 100ms time slices
+    mediaRecorder.ondataavailable = e => { if (e.data?.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.start(100);
     isRecording = true;
-
-    // Update UI
-    btnPushToTalk.classList.add('recording');
-    pttMainText.textContent = 'Recording...';
+    btnPTT.classList.add('recording');
+    pttLabel.textContent = 'Recording — Release to send';
     showHUD('listening');
-
-  } catch (err) {
-    console.error('Mic access error:', err);
-    showToast('🎙️ Microphone access denied', 'error');
+  } catch {
+    toast('Microphone access denied', 'error');
   }
 }
 
-async function stopRecording() {
+async function stopRec() {
   if (!isRecording || !mediaRecorder) return;
-
-  return new Promise((resolve) => {
-    mediaRecorder.onstop = () => resolve();
-    mediaRecorder.stop();
-    isRecording = false;
-  });
+  await new Promise(res => { mediaRecorder.onstop = res; mediaRecorder.stop(); });
+  isRecording = false;
 }
 
-async function submitVoiceQuery() {
-  await stopRecording();
+async function submitVoice() {
+  await stopRec();
+  btnPTT.classList.remove('recording');
+  pttLabel.textContent = 'Push to Talk';
 
-  if (audioChunks.length === 0) {
-    resetPTTButton();
-    hideHUD();
-    return;
-  }
+  if (!audioChunks.length) { hideHUD(); return; }
 
-  const mimeType = getMimeType() || 'audio/webm';
-  const audioBlob = new Blob(audioChunks, { type: mimeType });
+  const mime = mimeType() || 'audio/webm';
+  const blob = new Blob(audioChunks, { type: mime });
   audioChunks = [];
 
-  // Append a user "voice" message placeholder
-  const userMsgEl = appendMessage('user', '🎙️ Voice query...', null);
-
+  const userRow = addMsg('user', '🎙️ Voice query...');
   isProcessing = true;
-  resetPTTButton();
   showHUD('thinking');
 
   try {
-    const formData = new FormData();
-    const ext = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'mp4' : 'webm';
-    formData.append('audio', audioBlob, `recording.${ext}`);
-    formData.append('frame_mode', frameMode);
+    const fd = new FormData();
+    const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm';
+    fd.append('audio', blob, `rec.${ext}`);
+    fd.append('frame_mode', frameMode);
 
-    const startTs = Date.now();
-    const res = await fetch('/api/ask', { method: 'POST', body: formData });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.detail || `Server error: ${res.status}`);
-    }
-
+    const t0 = Date.now();
+    const res = await fetch('/api/ask', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Error ${res.status}`);
     const data = await res.json();
-    const elapsed = Date.now() - startTs;
 
-    // Update user bubble if transcript is available
-    if (data.transcript && userMsgEl) {
-      userMsgEl.querySelector('.msg-bubble').textContent = `🎙️ "${data.transcript}"`;
-    }
-
-    appendAssistantMessage(data, elapsed);
-
+    if (data.transcript) userRow.querySelector('.bubble').textContent = `🎙️ "${data.transcript}"`;
+    addAssistantMsg(data, Date.now() - t0);
   } catch (err) {
-    hideHUD();
-    showToast(`❌ ${err.message}`, 'error');
-    userMsgEl?.remove();
-    console.error('Voice query error:', err);
+    toast(err.message, 'error');
+    userRow.remove();
   } finally {
     isProcessing = false;
     hideHUD();
   }
 }
 
-// PTT button — mousedown/mouseup
-btnPushToTalk.addEventListener('mousedown', (e) => {
-  e.preventDefault();
-  startRecording();
-});
+// PTT mouse
+btnPTT.addEventListener('mousedown', e => { e.preventDefault(); startRec(); });
+btnPTT.addEventListener('mouseup', () => { if (isRecording) submitVoice(); });
+btnPTT.addEventListener('mouseleave', () => { if (isRecording) submitVoice(); });
 
-btnPushToTalk.addEventListener('mouseup', () => {
-  if (isRecording) submitVoiceQuery();
-});
+// PTT touch
+btnPTT.addEventListener('touchstart', e => { e.preventDefault(); startRec(); });
+btnPTT.addEventListener('touchend', e => { e.preventDefault(); if (isRecording) submitVoice(); });
 
-btnPushToTalk.addEventListener('mouseleave', () => {
-  if (isRecording) submitVoiceQuery();
+// Space key
+let spaceDown = false;
+document.addEventListener('keydown', e => {
+  if (e.target === textInput) return;
+  if (e.code === 'Space' && !spaceDown && !isProcessing) {
+    e.preventDefault(); spaceDown = true; startRec();
+  }
 });
-
-// Touch events for mobile
-btnPushToTalk.addEventListener('touchstart', (e) => {
-  e.preventDefault();
-  startRecording();
-});
-
-btnPushToTalk.addEventListener('touchend', (e) => {
-  e.preventDefault();
-  if (isRecording) submitVoiceQuery();
-});
-
-// Keyboard Space key hold
-let spaceHeld = false;
-document.addEventListener('keydown', (e) => {
-  // Ignore if typing in text field
-  if (document.activeElement === inputQueryText) return;
-  if (e.code === 'Space' && !spaceHeld && !isProcessing) {
-    e.preventDefault();
-    spaceHeld = true;
-    startRecording();
+document.addEventListener('keyup', e => {
+  if (e.code === 'Space' && spaceDown) {
+    e.preventDefault(); spaceDown = false;
+    if (isRecording) submitVoice();
   }
 });
 
-document.addEventListener('keyup', (e) => {
-  if (e.code === 'Space' && spaceHeld) {
-    e.preventDefault();
-    spaceHeld = false;
-    if (isRecording) submitVoiceQuery();
-  }
-});
+// ── Text submission ───────────────────────────────────────────────
 
-function resetPTTButton() {
-  btnPushToTalk.classList.remove('recording');
-  pttMainText.textContent = 'Push to Talk';
-}
-
-// =============================================================================
-// Text Query Submission
-// =============================================================================
-
-textQueryForm.addEventListener('submit', async (e) => {
+textForm.addEventListener('submit', async e => {
   e.preventDefault();
-
-  const question = inputQueryText.value.trim();
-  if (!question || isProcessing) return;
-
-  inputQueryText.value = '';
+  const q = textInput.value.trim();
+  if (!q || isProcessing) return;
+  textInput.value = '';
   isProcessing = true;
+  btnSend.disabled = true;
 
-  appendMessage('user', question, null);
+  addMsg('user', q);
   showHUD('thinking');
-  btnSubmitText.disabled = true;
 
   try {
-    const formData = new FormData();
-    formData.append('question', question);
-    formData.append('frame_mode', frameMode);
-
-    const startTs = Date.now();
-    const res = await fetch('/api/ask-text', { method: 'POST', body: formData });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.detail || `Server error: ${res.status}`);
-    }
-
+    const fd = new FormData();
+    fd.append('question', q);
+    fd.append('frame_mode', frameMode);
+    const t0 = Date.now();
+    const res = await fetch('/api/ask-text', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Error ${res.status}`);
     const data = await res.json();
-    const elapsed = Date.now() - startTs;
-
-    appendAssistantMessage(data, elapsed);
-
+    addAssistantMsg(data, Date.now() - t0);
   } catch (err) {
-    showToast(`❌ ${err.message}`, 'error');
-    console.error('Text query error:', err);
+    toast(err.message, 'error');
   } finally {
     isProcessing = false;
     hideHUD();
-    btnSubmitText.disabled = false;
+    btnSend.disabled = false;
   }
 });
 
-// =============================================================================
-// Quick Prompt Chips
-// =============================================================================
-
-chipBtns.forEach(chip => {
+// Quick chips
+document.querySelectorAll('.chip').forEach(chip => {
   chip.addEventListener('click', () => {
-    const query = chip.dataset.query;
-    if (!query || isProcessing) return;
-    inputQueryText.value = query;
-    textQueryForm.dispatchEvent(new Event('submit', { cancelable: true }));
+    if (isProcessing) return;
+    textInput.value = chip.dataset.query;
+    textForm.dispatchEvent(new Event('submit', { cancelable: true }));
   });
 });
 
-// =============================================================================
-// Chat Rendering
-// =============================================================================
+// ── Context reset ─────────────────────────────────────────────────
 
-/**
- * Append a user or assistant message.
- * @param {'user'|'assistant'} role
- * @param {string} text
- * @param {object|null} meta  — latency metadata from API
- * @returns {HTMLElement}
- */
-function appendMessage(role, text, meta = null) {
-  // Hide the welcome empty state on first message
-  if (feedEmptyState && !feedEmptyState.classList.contains('hidden')) {
-    feedEmptyState.classList.add('hidden');
+btnReset.addEventListener('click', async () => {
+  try {
+    await fetch('/api/reset', { method: 'POST' });
+    convFeed.innerHTML = '';
+    convFeed.appendChild(welcomeCard);
+    welcomeCard.classList.remove('hidden');
+    msgTotal = 0;
+    msgCount.textContent = '0 messages';
+    hideHUD();
+    toast('Conversation cleared');
+  } catch {
+    toast('Reset failed', 'error');
   }
+});
+
+// ── Chat rendering ────────────────────────────────────────────────
+
+function addMsg(role, text) {
+  welcomeCard.classList.add('hidden');
 
   const row = document.createElement('div');
-  row.className = `message-bubble-row ${role === 'user' ? 'user-row' : 'assistant-row'}`;
+  row.className = `msg-row ${role === 'user' ? 'user' : 'kaya'}`;
 
   const bubble = document.createElement('div');
-  bubble.className = `msg-bubble ${role === 'user' ? 'user-bubble' : 'assistant-bubble'}`;
+  bubble.className = 'bubble';
   bubble.textContent = text;
 
-  const metaRow = document.createElement('div');
-  metaRow.className = 'msg-meta-row';
-
+  const meta = document.createElement('div');
+  meta.className = 'msg-meta';
   const ts = document.createElement('span');
-  ts.className = 'msg-timestamp';
-  ts.textContent = formatTime(new Date());
-  metaRow.appendChild(ts);
+  ts.className = 'meta-time';
+  ts.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  meta.appendChild(ts);
 
   row.appendChild(bubble);
-  row.appendChild(metaRow);
-  conversationFeed.appendChild(row);
+  row.appendChild(meta);
+  convFeed.appendChild(row);
 
-  messageCount++;
-  historyCounter.textContent = `${messageCount} message${messageCount !== 1 ? 's' : ''}`;
-
-  scrollFeedToBottom();
+  msgTotal++;
+  msgCount.textContent = `${msgTotal} message${msgTotal !== 1 ? 's' : ''}`;
+  scrollDown();
   return row;
 }
 
-/**
- * Append a full assistant response with latency pills and audio replay.
- */
-function appendAssistantMessage(data, totalElapsed) {
-  const answer = data.answer || data.text || data.response || 'No response.';
-  const row = appendMessage('assistant', answer, data);
-
-  const metaRow = row.querySelector('.msg-meta-row');
+function addAssistantMsg(data, elapsed) {
+  const text = data.answer || data.text || data.response || 'No response.';
+  const row = addMsg('kaya', text);
+  const meta = row.querySelector('.msg-meta');
 
   // Latency pills
-  if (data.latency_ms || data.stt_ms || data.vlm_ms || data.tts_ms || totalElapsed) {
-    const pillsWrap = document.createElement('div');
-    pillsWrap.className = 'latency-pills-wrap';
+  [['STT', data.stt_ms], ['VLM', data.vlm_ms], ['TTS', data.tts_ms]].forEach(([label, val]) => {
+    if (val == null) return;
+    const p = document.createElement('span');
+    p.className = 'lat-pill';
+    p.textContent = `${label}: ${Math.round(val)}ms`;
+    meta.appendChild(p);
+  });
+  if (!data.stt_ms && !data.vlm_ms && elapsed) {
+    const p = document.createElement('span');
+    p.className = 'lat-pill';
+    p.textContent = `${Math.round(elapsed)}ms`;
+    meta.appendChild(p);
+  }
 
-    const addPill = (label, val) => {
-      if (val == null) return;
-      const p = document.createElement('span');
-      p.className = 'latency-pill';
-      p.textContent = `${label}: ${Math.round(val)}ms`;
-      pillsWrap.appendChild(p);
+  // Audio replay + autoplay
+  if (data.audio_b64 || data.audio_url) {
+    const getAudio = () => {
+      if (data.audio_url) return new Audio(data.audio_url);
+      return new Audio(`data:${data.audio_mime || 'audio/mpeg'};base64,${data.audio_b64}`);
     };
 
-    addPill('STT', data.stt_ms);
-    addPill('VLM', data.vlm_ms);
-    addPill('TTS', data.tts_ms);
+    const btn = document.createElement('button');
+    btn.className = 'btn-replay';
+    btn.textContent = '▶ Replay';
+    btn.onclick = () => getAudio().play().catch(() => {});
+    meta.appendChild(btn);
 
-    if (!data.stt_ms && !data.vlm_ms && totalElapsed) {
-      addPill('Total', totalElapsed);
-    }
-
-    metaRow.appendChild(pillsWrap);
+    // Autoplay
+    showHUD('speaking');
+    const audio = getAudio();
+    audio.onended = hideHUD;
+    audio.onerror = hideHUD;
+    audio.play().catch(hideHUD);
   }
 
-  // Audio replay button
-  if (data.audio_b64 || data.audio_url) {
-    const replayBtn = document.createElement('button');
-    replayBtn.type = 'button';
-    replayBtn.className = 'btn-replay-audio';
-    replayBtn.title = 'Replay TTS audio';
-    replayBtn.innerHTML = `
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-        <polygon points="5,3 19,12 5,21"/>
-      </svg>
-      Replay
-    `;
-
-    replayBtn.addEventListener('click', () => {
-      if (data.audio_url) {
-        const audio = new Audio(data.audio_url);
-        audio.play();
-      } else if (data.audio_b64) {
-        const mime = data.audio_mime || 'audio/mpeg';
-        const src = `data:${mime};base64,${data.audio_b64}`;
-        const audio = new Audio(src);
-        audio.play().catch(console.error);
-      }
-    });
-
-    metaRow.appendChild(replayBtn);
-
-    // Auto-play TTS if this is a fresh voice response
-    if (data.audio_b64) {
-      showHUD('speaking');
-      const mime = data.audio_mime || 'audio/mpeg';
-      const src = `data:${mime};base64,${data.audio_b64}`;
-      const audio = new Audio(src);
-      audio.onended = () => hideHUD();
-      audio.onerror = () => hideHUD();
-      audio.play().catch(() => hideHUD());
-    } else if (data.audio_url) {
-      showHUD('speaking');
-      const audio = new Audio(data.audio_url);
-      audio.onended = () => hideHUD();
-      audio.onerror = () => hideHUD();
-      audio.play().catch(() => hideHUD());
-    }
-  }
-
-  scrollFeedToBottom();
+  scrollDown();
   return row;
 }
 
-// =============================================================================
-// Context Reset
-// =============================================================================
+// ── Toasts ────────────────────────────────────────────────────────
 
-btnResetContext.addEventListener('click', async () => {
-  try {
-    const res = await fetch('/api/reset', { method: 'POST' });
-    if (!res.ok) throw new Error('Reset failed');
-
-    // Clear chat
-    conversationFeed.innerHTML = '';
-    conversationFeed.appendChild(feedEmptyState);
-    feedEmptyState.classList.remove('hidden');
-    messageCount = 0;
-    historyCounter.textContent = '0 messages';
-    hideHUD();
-
-    showToast('🔄 Conversation context cleared', 'success');
-  } catch (err) {
-    showToast(`❌ Reset failed: ${err.message}`, 'error');
-  }
-});
-
-// =============================================================================
-// Toast Notifications
-// =============================================================================
-
-/**
- * Show a toast notification.
- * @param {string} message
- * @param {'default'|'success'|'error'} type
- * @param {number} duration ms
- */
-function showToast(message, type = 'default', duration = 3000) {
-  const toast = document.createElement('div');
-  toast.className = `toast${type === 'success' ? ' toast-success' : type === 'error' ? ' toast-error' : ''}`;
-  toast.textContent = message;
-  toastContainer.appendChild(toast);
-
-  setTimeout(() => {
-    toast.style.opacity = '0';
-    setTimeout(() => toast.remove(), 220);
-  }, duration);
+function toast(msg, type = 'default', ms = 3000) {
+  const el = document.createElement('div');
+  el.className = `toast${type === 'success' ? ' success' : type === 'error' ? ' error' : ''}`;
+  el.textContent = msg;
+  toastContainer.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 200); }, ms);
 }
 
-// =============================================================================
-// Utility Helpers
-// =============================================================================
+// ── Utilities ─────────────────────────────────────────────────────
 
-function scrollFeedToBottom() {
-  requestAnimationFrame(() => {
-    conversationFeed.scrollTop = conversationFeed.scrollHeight;
-  });
+function scrollDown() {
+  requestAnimationFrame(() => { convFeed.scrollTop = convFeed.scrollHeight; });
 }
 
-function formatTime(date) {
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-// =============================================================================
-// Video Feed Error Recovery
-// =============================================================================
-
-videoFeed.addEventListener('error', () => {
-  // Retry connection after 3 seconds
-  setTimeout(refreshVideoStream, 3000);
-});
-
-// =============================================================================
-// Initialization
-// =============================================================================
-
-(function init() {
-  // Start status polling
-  startStatusPolling();
-
-  // Ensure the initial stream is set
-  refreshVideoStream();
-
-  console.log(
-    '%c Kaya Safety Copilot %c v0.3 Ready ',
-    'background:#4f46e5;color:#fff;padding:4px 8px;border-radius:4px 0 0 4px;font-weight:700',
-    'background:#10b981;color:#fff;padding:4px 8px;border-radius:0 4px 4px 0;font-weight:600'
-  );
-})();
+// Init
+reloadStream();
