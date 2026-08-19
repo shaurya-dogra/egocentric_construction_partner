@@ -27,10 +27,19 @@ htmlcov/
 ehthumbs.db
 Thumbs.db
 
-# Model weights and test media
+# Model weights (downloaded at runtime via HuggingFace / Ultralytics)
 *.pt
+*.onnx
 weights/
+models/
+
+# HuggingFace cache (large — downloaded on first run)
+.cache/
+~/.cache/huggingface/
+
+# Test media
 test_videos/
+test_images/
 
 # Local databases, sidecar journals, and logs
 *.db
@@ -39,7 +48,9 @@ test_videos/
 *.db-shm
 *.sqlite
 data/events.db
+data/
 *.log
+logs/
 
 # IDE and Editor files
 .vscode/
@@ -49,12 +60,35 @@ data/events.db
 *.njsproj
 *.sln
 *.swp
+*.swx
+*~
 
 # Environment variables & secrets
 .env
 .env.*
+*.secret
 
 # Test snapshots & scratch files
 *.jpg
+*.jpeg
 *.png
+*.gif
+*.mp4
+*.webm
 scratch/
+
+# Node (for v.fast depth reference project — not part of Kaya itself)
+node_modules/
+dist/
+.turbo/
+
+# Compiled JS output
+*.js.map
+
+# Misc build artifacts
+*.pyc
+*.pyd
+*.pyo
+build/
+dist/
+*.egg-info/

@@ -196,10 +196,10 @@ class CopilotBridge:
                     "depth": depth_val,
                 })
             poses_out.append({
-                "track_id": pose.person_track_id,
+                "track_id": int(pose.person_track_id) if pose.person_track_id is not None else None,
                 "keypoints": kp_list,
-                "head_yaw": pose.head_yaw,
-                "body_angle": pose.body_angle,
+                "head_yaw":   round(float(pose.head_yaw),  2) if pose.head_yaw  is not None else None,
+                "body_angle": round(float(pose.body_angle), 2) if pose.body_angle is not None else None,
             })
 
         return {

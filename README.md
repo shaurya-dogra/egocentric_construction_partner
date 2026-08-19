@@ -1,287 +1,314 @@
-# 🏗️ Kaya — Job Site Safety Copilot & Voice+Vision Assistant
+# Kaya — Real-Time Job Site Safety Copilot
 
-> A real-time, edge-accelerated computer vision pipeline and multimodal AI safety copilot for construction job sites. Kaya combines multi-model object & tool detection (YOLO11 COCO + YOLO-World + YOLO26 PPE), 17-keypoint worker pose estimation, Depth Anything V2 metric distance calculation, and attention-based hazard escalation with an interactive, side-by-side **Voice + Vision Multimodal Copilot** powered by Google Gemini, NVIDIA NIM, and Sarvam AI.
-
-Built for the **Kaya Hackathon** by Team Antigravity.
+> **AI-powered construction site monitoring.** Real-time multi-model computer vision + multimodal voice assistant running on Apple Silicon.
 
 ---
 
-## 📋 Table of Contents
+## What It Does
 
-- [Key Features](#-key-features)
-- [System Architecture](#-system-architecture)
-- [Side-by-Side Web Dashboard](#-side-by-side-web-dashboard)
-- [Multimodal Voice + Vision Pipeline](#-multimodal-voice--vision-pipeline)
-- [Computer Vision Engine (Tier 1)](#-computer-vision-engine-tier-1)
-- [Raspberry Pi 5 & IP Camera Streaming](#-raspberry-pi-5--ip-camera-streaming)
-- [Project Structure](#-project-structure)
-- [Getting Started & Installation](#-getting-started--installation)
-- [Configuration Reference (`config.yaml` & `.env`)](#-configuration-reference)
-- [REST API Reference](#-rest-api-reference)
-- [Automated Testing](#-automated-testing)
-- [License](#-license)
+Kaya is a full-stack AI safety system that runs on an Apple Silicon Mac (M-series, MPS GPU) and streams a live web dashboard. It:
+
+- Detects **people, heavy machinery, tools** and **PPE compliance** in real-time
+- Estimates **metric depth** per-frame using Depth Anything V2
+- Tracks **3D human pose** and **eye gaze** of every worker
+- Listens to voice queries → reasons over live video context → speaks back (Push-to-Talk)
+- Maintains a **temporal ring buffer** so the AI can answer questions about *what just happened*
 
 ---
 
-## ⚡ Key Features
-
-1. **Multi-Model Real-Time Computer Vision Pipeline (28+ FPS on Apple Silicon)**:
-   - **General COCO Detection (YOLO11n)**: Detects persons, vehicles, workplace equipment, and 80 standard COCO classes.
-   - **Open-Vocabulary Tool Detection (YOLO-World v2)**: Detects 125+ specialized construction and workshop hand tools, power tools, safety gear, infrastructure items, and site hazards.
-   - **Job-Site PPE Compliance**: Monitors hardhats, safety vests, masks, and flags missing PPE in real time.
-   - **17-Keypoint YOLO-Pose Estimation**: Tracks worker posture, head yaw angle, and fall events.
-   - **Monocular Depth Anything V2 (Metric)**: Computes direct physical distance in meters to every tracked worker, vehicle, tool, and hazard without stereo cameras or LiDAR.
-   - **Gaze & Attention Tracking**: Evaluates whether a worker is looking at an approaching hazard. If unnoticed for 4+ seconds, automatically escalates danger severity.
-
-2. **Unified Side-by-Side Web Dashboard**:
-   - **Left Panel**: Live annotated computer vision stream with YOLO bounding boxes, distance overlays, pose skeletons, wrist-to-tool carrying links, and real-time metric pills (`● Objects Tracked`, `● Hazards Active`, `● Buffer: 6/8 frames`, `30 FPS`).
-   - **Right Panel**: Push-to-Talk interactive conversation feed with message bubbles, latency breakdown tags (`STT: 0ms | VLM: 1.4s | TTS: 0.8s`), and text input bar.
-
-3. **Modular Multimodal Vision Reasoning**:
-   - Supports **Google Gemini 3.5 Flash**, **NVIDIA NIM (`meta/llama-3.2-11b-vision-instruct`)**, and **Local Ollama**.
-   - **1-FPS Rolling Temporal Frame Buffer**: Retains a rolling 6-8 second chronological frame sequence, allowing the model to analyze dynamic motion (*"What just fell?"*, *"Which worker left the zone?"*).
-   - **Benchmarking Mode Switcher**: Easily toggle between `🎞️ Temporal Frames` and `🖼️ Single Frame`.
-
-4. **Zero-Latency Resilient Speech Engine**:
-   - **Sarvam AI TTS** (`bulbul:v3/shubh`): High-clarity natural speech with automatic fallback.
-   - **macOS Native Speech Engine** (`/usr/bin/say -v 'Samantha'`): 0ms network latency Apple Silicon on-device speech synthesis.
-   - **Web Speech API**: Client-side audio failover if network interruptions occur.
-
----
-
-## 🏛️ System Architecture
+## Architecture
 
 ```
-                                      ┌────────────────────────────────────────────────────────┐
-                                      │              INPUT VIDEO SOURCE                        │
-                                      │   Webcam / Pi 5 Camera / RTSP Stream / MP4 Video       │
-                                      └──────────────────────────┬─────────────────────────────┘
-                                                                 │
-                                                                 ▼
-┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                          KAYA SAFETY COPILOT COMPUTER VISION ENGINE                                            │
-│                                                                                                                                │
-│  ┌─────────────────────────┐   ┌─────────────────────────┐   ┌─────────────────────────┐   ┌─────────────────────────┐         │
-│  │ YOLO11 COCO General Det │   │ YOLO-World Tool Scanner │   │ 17-Keypoint YOLO-Pose   │   │ Depth Anything V2 Metric│         │
-│  │ Persons, Trucks, Items  │   │ 125+ Construction Tools │   │ Posture & Fall Detection│   │ Physical Depth (meters) │         │
-│  └────────────┬────────────┘   └────────────┬────────────┘   └────────────┬────────────┘   └────────────┬────────────┘         │
-│               │                             │                             │                             │                      │
-│               └─────────────────────────────┼─────────────────────────────┴─────────────────────────────┘                      │
-│                                             ▼                                                                                  │
-│                                ┌─────────────────────────┐                                                                     │
-│                                │ Hazard & Attention Eval │ (Gaze Yaw Bearing + Dwell Time Escalation)                          │
-│                                └────────────┬────────────┘                                                                     │
-│                                             │                                                                                  │
-│                                             ▼                                                                                  │
-│                                ┌─────────────────────────┐                                                                     │
-│                                │ OverlayRenderer (OpenCV)│ (Bounding boxes, distance badges, tool links, danger zones)         │
-│                                └────────────┬────────────┘                                                                     │
-└─────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┘
-                                              │
-                                              ▼ (Thread-Safe Buffer)
-┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                            COPILOT BRIDGE (app/copilot_bridge.py)                                              │
-│  - MJPEG Frame Generator (GET /api/video_feed @ 30 FPS)                                                                        │
-│  - Rolling 1-FPS Temporal Ring Buffer (6-8s chronological frame history for VLM queries)                                       │
-└─────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────┘
-                                              │
-                                              ▼
-┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                       UNIFIED FASTAPI SERVER & SIDE-BY-SIDE DASHBOARD                                          │
-│                                                                                                                                │
-│  ┌─────────────────────────────────────────────────┐        ┌────────────────────────────────────────────────────────┐         │
-│  │ LEFT: Live Safety Copilot Computer Vision Feed  │        │ RIGHT: Voice + Vision Interactive Chat Copilot         │         │
-│  │  - Live YOLO Boxes, Keypoints, Metric Distances │        │  - Push-to-Talk (<kbd>Space</kbd> / Mic Button)        │         │
-│  │  - Live HUD Badges (Objects, Hazards, FPS)      │        │  - STT: Google Gemini / Sarvam AI / Whisper            │         │
-│  │  - MJPEG Video Stream (/api/video_feed)         │        │  - VLM: Gemini 3.5 Flash / NVIDIA NIM Llama 3.2 Vision │         │
-│  │                                                 │        │  - TTS: Sarvam AI / macOS Native Samantha Speech       │         │
-│  └─────────────────────────────────────────────────┘        └────────────────────────────────────────────────────────┘         │
-└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         main.py  (entry point)                      │
+│                                                                     │
+│   SafetyCopilot loop          Kaya Web App (FastAPI + Uvicorn)      │
+│   ┌────────────────┐          ┌──────────────────────────────────┐  │
+│   │ FrameSource    │          │  /api/video_feed   (MJPEG)       │  │
+│   │ (webcam/Pi)    │──frame──▶│  /api/ask          (voice)       │  │
+│   └───────┬────────┘          │  /api/ask-text     (text)        │  │
+│           │                   │  /api/pose         (3D viewer)   │  │
+│           ▼                   │  /api/status       (telemetry)   │  │
+│   ┌───────────────────────┐   └──────────────────────────────────┘  │
+│   │   Detection Pipeline  │                  │                      │
+│   │  ┌─────────────────┐  │                  ▼                      │
+│   │  │ YOLO11n         │  │         CopilotBridge (singleton)       │
+│   │  │ (80-class COCO) │  │         ┌────────────────────────────┐  │
+│   │  ├─────────────────┤  │         │ latest_raw_frame           │  │
+│   │  │ YOLO-World v2   │  │         │ latest_result (FrameResult)│  │
+│   │  │ (125 tool/PPE   │  │         │ latest_depth_map           │  │
+│   │  │  custom classes)│  │◀─result─│ overlay_renderer           │  │
+│   │  ├─────────────────┤  │         │ temporal_ring_buffer       │  │
+│   │  │ PPE YOLO (HF)   │  │         │   (1 FPS, 8-frame window)  │  │
+│   │  │ yolo26n.pt      │  │         └────────────────────────────┘  │
+│   │  │ 11 PPE classes  │  │                                         │
+│   │  └─────────────────┘  │                                         │
+│   │  ┌─────────────────┐  │                                         │
+│   │  │ YOLO-Pose       │  │                                         │
+│   │  │ yolo26n-pose.pt │  │                                         │
+│   │  │ 17-kp COCO      │  │                                         │
+│   │  └─────────────────┘  │                                         │
+│   │  ┌─────────────────┐  │                                         │
+│   │  │ Depth Anything  │  │                                         │
+│   │  │ V2 Metric Small │  │                                         │
+│   │  │ (async thread)  │  │                                         │
+│   │  └─────────────────┘  │                                         │
+│   └───────────────────────┘                                         │
+└─────────────────────────────────────────────────────────────────────┘
+
+Browser (http://127.0.0.1:8000)
+┌─────────────────────────────────────────────────────────────────────┐
+│  View Mode Tabs                                                      │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
+│  │Combined  │ │Normal    │ │3D Pose   │ │ Depth    │ │PPE / Obj │  │
+│  │(server)  │ │(server)  │ │(Three.js)│ │(WebGPU!) │ │(server)  │  │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
+│                                                                     │
+│  🌊 Depth Tab — Runs entirely in browser (mirrors v.fast depth):    │
+│    onnx-community/depth-anything-v2-small (WebGPU FP16)             │
+│    LUT ImageNet preprocessing → persistent Float32 buffer           │
+│    64-sample adaptive range + EMA smoothing (85%/15%)               │
+│    Analytical TURBO colormap (5th-order polynomial)                 │
+│                                                                     │
+│  👁️ 3D Pose Tab — Three.js real-time 3D skeleton:                  │
+│    Poll /api/pose (15 FPS) → keypoints depth-lifted to 3D           │
+│    Colored bones per COCO limb, joint spheres, gaze ray             │
+│    Auto-orbit PerspectiveCamera, GridHelper floor                   │
+│                                                                     │
+│  🎙️ Voice Chat (Push-to-Talk):                                      │
+│    STT: Gemini Flash → VLM: Gemini Flash (temporal frames)          │
+│    TTS: Sarvam Bulbul v3 → audio/wav autoplay                       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🎨 Side-by-Side Clean Dashboard
+## Model Stack
 
-The dashboard utilizes a clean, modern white theme (`#ffffff` / `#f8fafc`) designed for clarity on site monitors and mobile tablets:
-
-- **Left Panel (Video Output)**: Real-time OpenCV HUD streaming active detections, distance tags, pose skeletons, and tool-carrying links.
-- **Right Panel (Copilot Conversation)**: Push-to-Talk recording bar with <kbd>Space</kbd> shortcut, text query input form, and conversational turn history with timing breakdowns.
-- **Benchmarking Mode Switcher**: Instantly switch between `🎞️ Temporal Frames` (multi-frame chronological sequence) and `🖼️ Single Frame` mode.
-
----
-
-## 🧠 Multimodal Voice + Vision Pipeline
-
-When a voice or text query is submitted:
-1. **Audio Transcription (STT)**: Transcribes the spoken audio into text via Gemini Audio Understanding or Sarvam AI.
-2. **Temporal Frame Extraction**: Retrieves the latest rolling sequence of frames from the 1-FPS ring buffer.
-3. **Multimodal Reasoning (VLM)**: Passes the visual sequence + query to the configured VLM provider using a concise, direct system prompt.
-4. **Speech Synthesis (TTS)**: Synthesizes high-fidelity voice audio via Sarvam AI with immediate fallback to macOS Native Speech (`/usr/bin/say`).
+| Model | Purpose | Device | Notes |
+|---|---|---|---|
+| `yolo11n.pt` | General object detection (80 COCO classes) | MPS | YOLO11 nano |
+| `yolov8s-worldv2.pt` | Open-vocabulary tool + PPE detection (125 custom classes) | MPS | YOLO-World v2 |
+| `yihong1120/Construction-Hazard-Detection yolo26n.pt` | PPE compliance (Hardhat, Vest, No-Hardhat, No-Vest…) | MPS | HuggingFace Hub |
+| `yolo26n-pose.pt` | Human pose estimation (17 COCO keypoints) | MPS | Run every N=3 frames |
+| `depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf` | Metric monocular depth (in metres) | MPS | Async background thread |
+| `onnx-community/depth-anything-v2-small` | Browser-side relative depth (Depth tab) | WebGPU FP16 | Runs in Chrome — zero Python |
+| `gemini-3.5-flash` | STT + Vision reasoning (VLM) | Google API | Temporal 8-frame window |
+| `sarvam/bulbul:v3/shubh` | Text-to-Speech (Hindi-English) | Sarvam API | Returns WAV audio |
 
 ---
 
-## 📹 Raspberry Pi 5 & IP Camera Streaming
+## YOLO-World Custom Vocabulary (125 classes)
 
-Kaya includes a built-in lightweight streaming server (`pi_stream/stream_server.py`) for Raspberry Pi 5 with IMX219 / libcamera sensors:
+<details>
+<summary>Hand Tools</summary>
 
-```bash
-# On Raspberry Pi 5:
-python3 pi_stream/stream_server.py --port 8554 --width 1280 --height 720 --fps 30
+claw hammer · rubber mallet · screwdriver · adjustable wrench · socket wrench set · pliers · wire cutters · utility knife · hand saw · hacksaw · measuring tape · spirit level · chisel · hand file · allen key set · c-clamp · pipe wrench · putty knife · hand trowel · staple gun · crowbar · bolt cutters
 
-# On Mac / Host:
-python main.py --source http://<PI_IP_ADDRESS>:8554
-```
+</details>
+
+<details>
+<summary>Power Tools & Equipment</summary>
+
+cordless drill · impact driver · angle grinder · circular saw · reciprocating saw · jigsaw · table saw · miter saw · belt sander · orbital sander · nail gun · jackhammer · rotary hammer drill · heat gun · soldering iron · bench grinder · air compressor · pressure washer · chainsaw · welding machine · welding torch · extension cord reel · power strip
+
+</details>
+
+<details>
+<summary>PPE</summary>
+
+hard hat · safety vest · safety glasses · safety goggles · face shield · ear muffs · ear plugs · dust mask · respirator mask · work gloves · cut-resistant gloves · safety boots · steel-toe boots · knee pads · safety harness · welding helmet · high-visibility jacket
+
+</details>
+
+<details>
+<summary>Site Infrastructure, Vehicles, Hazards & Materials</summary>
+
+step ladder · extension ladder · scaffolding · safety cone · barricade · caution tape · guardrail · warning sign · toolbox · tool cart · storage bin · bucket · wheelbarrow · dumpster · dolly cart · workbench · shipping container · port-a-potty · forklift · excavator · bulldozer · backhoe loader · cement mixer · crane · dump truck · pickup truck · skid steer loader · road roller · scissor lift · boom lift · concrete pump truck · flatbed trailer · exposed wire · cinder block · rebar · gas cylinder · propane tank · fire extinguisher · wooden pallet · spill puddle · sandbag · lumber stack · metal pipe · concrete slab · electrical panel · open manhole · debris pile · sharp metal shard · asbestos warning sign · cell phone · laptop · clipboard · water bottle · backpack · hard hat with attached radio · two-way radio · lunch box · first aid kit · coffee cup · folding chair · trash can · broom · dustpan
+
+</details>
 
 ---
 
-## 📁 Project Structure
+## Directory Structure
 
 ```
 kaya hackathon/
-├── alerts/                 # TTS audio alerts & priority manager
-│   ├── alert_manager.py    # Hazard alert generation & spatial cues
-│   └── tts_engine.py       # macOS native voice alert dispatcher
-├── app/                    # Voice + Vision Multimodal Backend
-│   ├── config.py           # Pydantic v2 settings & environment variables
-│   ├── copilot_bridge.py   # Thread-safe MJPEG streaming & temporal buffer
-│   ├── factory.py          # Provider factory (Gemini, NVIDIA, Sarvam, Ollama, Mac)
-│   ├── interfaces.py       # Abstract Base Classes (STTProvider, VisionReasoner, TTSProvider)
-│   ├── main.py             # FastAPI web application endpoints
-│   ├── pipeline.py         # KayaPipeline orchestrating STT -> VLM -> TTS
-│   └── providers/          # Modular provider implementations
-│       ├── stt/            # Gemini STT, Sarvam STT, Mock STT
-│       ├── vision/         # Gemini 3.5 Flash, NVIDIA NIM Llama 3.2, Ollama, Mock
-│       └── tts/            # Sarvam AI TTS, macOS Native TTS, Mock TTS
-├── core/                   # Real-time Edge Computer Vision Pipeline
-│   ├── capture.py          # Unified FrameSource (Webcam, RTSP, Video, Image)
-│   ├── depth_estimator.py  # Depth Anything V2 monocular metric depth
-│   ├── detector.py         # Multi-model YOLO11 + YOLO-World + PPE detector
-│   ├── device.py           # Apple Silicon MPS / CPU device manager
-│   ├── models.py           # Dataclasses (Detection, TrackedObject, FrameResult)
-│   └── pose_estimator.py   # 17-keypoint skeleton & head yaw estimator
-├── data/                   # Safety event logger SQLite database (events.db)
-├── display/                # OpenCV HUD overlay renderer with rich color palettes
-├── integration/            # VLMHook multimodal reasoner bridge
-├── logging_/               # Structured SQLite event logging
-├── models/                 # ByteTrack tracking configuration
-├── pi_stream/              # Raspberry Pi stream server script
-├── static/                 # White-themed dashboard UI (HTML, CSS, JS)
-├── tests/                  # Automated pytest unit & pipeline test suite
-├── config.yaml             # Safety copilot computer vision configuration
-├── main.py                 # Unified Safety Copilot + Web Server entry point
-├── requirements.txt        # Python dependency manifest
-└── run_voice_assistant.py  # Standalone assistant launcher
+├── main.py                     # Entry point — starts SafetyCopilot + web server
+├── config.yaml                 # Runtime configuration (models, thresholds, providers)
+├── requirements.txt
+│
+├── core/
+│   ├── capture.py              # FrameSource — webcam or Pi MJPEG stream
+│   ├── detector.py             # Multi-model detector (YOLO11 + YOLO-World + PPE)
+│   ├── pose_estimator.py       # YOLO-Pose 17-keypoint estimator
+│   ├── depth_estimator.py      # Depth Anything V2 — async background thread
+│   ├── tracker.py              # ByteTrack object tracker
+│   ├── models.py               # Pydantic dataclasses (FrameResult, Detection, PoseData…)
+│   └── device.py               # MPS / CUDA / CPU device selection
+│
+├── display/
+│   └── overlay.py              # OverlayRenderer — HUD, skeletons, depth, PPE audit
+│                               # All 6 view modes with EMA depth + TURBO colormap
+│
+├── app/
+│   ├── main.py                 # FastAPI app — all HTTP endpoints
+│   ├── copilot_bridge.py       # Thread-safe singleton bridge (frame state + temporal buffer)
+│   ├── pipeline.py             # STT → VLM → TTS execution pipeline
+│   ├── interfaces.py           # Provider ABC definitions
+│   ├── factory.py              # Provider factory (selects STT/VLM/TTS from config)
+│   └── providers/
+│       ├── stt/                # gemini_stt, sarvam_stt, mock_stt
+│       ├── tts/                # sarvam_tts, mock_tts
+│       └── vision/             # gemini_vision, mock_vision
+│
+├── integration/
+│   └── vlm_hook.py             # VLMHook — injects temporal frames into Gemini calls
+│
+├── logging_/
+│   └── event_logger.py         # SQLite event logger
+│
+├── static/
+│   ├── index.html              # Dashboard HTML (Three.js + HF Transformers via CDN)
+│   ├── app.js                  # Frontend logic:
+│   │                           #   - Browser-side WebGPU depth inference (v.fast depth port)
+│   │                           #   - Three.js 3D pose viewer (/api/pose polling)
+│   │                           #   - Push-to-Talk MediaRecorder
+│   │                           #   - TTS audio autoplay
+│   └── styles.css              # Clean white dashboard CSS
+│
+├── pi_stream/
+│   └── stream_server.py        # Raspberry Pi MJPEG stream server
+│
+├── tests/                      # pytest test suite (17 tests)
+└── data/                       # SQLite event database (gitignored)
 ```
 
 ---
 
-## 🚀 Getting Started & Installation
+## Setup
 
-### 1. Prerequisites
-- macOS (Apple Silicon recommended) or Linux
-- Python 3.10 to 3.13
-- Webcam, Raspberry Pi camera, or video file
+### Prerequisites
 
-### 2. Setup Virtual Environment
+- Python 3.11+
+- macOS with Apple Silicon (MPS GPU) — or any CUDA/CPU machine
+- Chrome / Edge (required for WebGPU depth tab)
+
+### Install
+
 ```bash
+git clone https://github.com/shaurya-dogra/egocentric_construction_partner
 cd "kaya hackathon"
-python3 -m venv .venv
+
+python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure `.env`
-Create or edit your `.env` file:
-```ini
-# Vision Reasoner (gemini | nvidia | ollama | mock)
-VISION_PROVIDER=gemini
-GEMINI_MODEL=gemini-3.5-flash
-GEMINI_API_KEY=AIzaSy...
+### Environment Variables
 
-# STT Provider (gemini | sarvam | mock)
-STT_PROVIDER=gemini
+Create a `.env` file:
 
-# TTS Provider (sarvam | mac | mock)
-TTS_PROVIDER=sarvam
-SARVAM_API_KEY=...
-
-# NVIDIA NIM (Optional)
-NVIDIA_API_KEY=nvapi-...
-NVIDIA_MODEL=meta/llama-3.2-11b-vision-instruct
-NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-
-# Temporal Buffer Settings
-FRAME_MODE=TEMPORAL_FRAMES
-TEMPORAL_BUFFER_SECONDS=6.0
-TEMPORAL_FPS=1.0
-TEMPORAL_MAX_FRAMES=8
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+SARVAM_API_KEY=your_sarvam_api_key_here
 ```
 
-### 4. Run the Application
+### Run
 
-#### Option A: Unified Safety Copilot & Web Dashboard (Recommended)
 ```bash
+source .venv/bin/activate
 python main.py
 ```
-*Starts both the OpenCV safety engine and the web dashboard at `http://127.0.0.1:8000`.*
 
-#### Option B: Run on a Specific Video File
+Open **http://127.0.0.1:8000** in Chrome.
+
+---
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/` | GET | Web dashboard |
+| `/api/video_feed` | GET | MJPEG stream (`?mode=all\|raw\|pose\|depth\|ppe\|objects`) |
+| `/api/ask` | POST | Voice query (multipart audio) |
+| `/api/ask-text` | POST | Text query |
+| `/api/pose` | GET | Current pose keypoints + depth JSON for 3D viewer |
+| `/api/status` | GET | System telemetry (FPS, providers, temporal buffer) |
+| `/api/reset` | POST | Clear conversation history |
+
+---
+
+## View Modes
+
+| Tab | How it works |
+|---|---|
+| 🎯 **Combined** | All detections overlaid (YOLO + PPE + Pose + Depth tags) |
+| 📹 **Normal** | Raw camera feed, no overlays |
+| 👁️ **3D Pose** | Three.js 3D scene — skeleton bones + joints + gaze ray, depth-lifted coordinates, orbit camera |
+| 🌊 **Depth** | Browser-side WebGPU inference via `onnx-community/depth-anything-v2-small` (FP16), rendered with analytical TURBO colormap + EMA temporal smoothing |
+| 🦺 **PPE** | PPE compliance audit — compliance halo per worker, missing gear warnings |
+| 🔨 **Objects** | Tool + machinery detections only, wrist-to-tool carrying links |
+
+---
+
+## Temporal Feed
+
+The voice assistant has memory of the last **8 seconds** of video:
+
+1. Every processed frame is sampled at ~1 FPS into a ring buffer in `CopilotBridge`
+2. When a voice/text query arrives, `get_latest_temporal_frames(max_frames=8)` returns those JPEG frames
+3. All 8 frames + the question are sent to Gemini Flash as a multimodal temporal sequence
+4. Gemini can answer questions like *"What happened in the last few seconds?"* or *"Did someone just pick up a tool?"*
+
+---
+
+## Raspberry Pi Integration
+
+Kaya can accept video from a remote Raspberry Pi instead of a local webcam:
+
 ```bash
-python main.py --source test_videos/13771068_1920_1080_60fps.mp4
+# On the Pi (run pi_stream/stream_server.py)
+python pi_stream/stream_server.py
+
+# In config.yaml
+capture:
+  source: "http://<pi-ip>:8080/stream"
 ```
 
-#### Option C: Start Web Assistant Server Standalone
-```bash
-python run_voice_assistant.py
+---
+
+## Configuration (`config.yaml`)
+
+```yaml
+capture:
+  source: 0                    # 0 = webcam, or MJPEG URL
+
+models:
+  general: yolo11n.pt
+  tool: yolov8s-worldv2.pt
+  ppe: hf:yihong1120/...
+  pose: yolo26n-pose.pt
+  depth:
+    path: depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf
+    enabled: true
+    run_every_n_frames: 3
+
+kaya:
+  stt_provider: gemini
+  vision_provider: gemini
+  tts_provider: sarvam
+  model: gemini-3.5-flash
+  frame_mode: TEMPORAL_FRAMES   # or SINGLE_FRAME
+  temporal_buffer_seconds: 6.0
+  max_temporal_frames: 8
 ```
 
-Open **`http://127.0.0.1:8000`** in your browser.
-
 ---
 
-## ⚙️ Configuration Reference
+## Tech Stack
 
-### `config.yaml`
-Controls the computer vision pipeline parameters:
-- `models.general`: High-speed YOLO11n COCO detector for general workplace objects (`confidence: 0.30`).
-- `models.tool`: Open-vocabulary YOLO-World tool detector loaded with 125+ construction and workshop items (`confidence: 0.20`).
-- `models.ppe`: Path and confidence thresholds for PPE detection.
-- `models.pose`: 17-keypoint pose estimation settings (`run_every_n_frames: 3`).
-- `models.depth`: Depth Anything V2 Metric (Outdoor Small) direct distance estimation.
-- `escalation.dwell_threshold_seconds`: Time before unnoticed hazards escalate (default: `4.0s`).
-
----
-
-## 📡 REST API Reference
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/` | Serves the web dashboard UI. |
-| `GET` | `/api/video_feed` | High-speed multipart MJPEG video stream of annotated YOLO frames. |
-| `GET` | `/api/status` | System health, provider statuses, copilot FPS, and tracked objects. |
-| `POST` | `/api/ask` | Multipart audio voice + image frames query. Returns answer + WAV audio. |
-| `POST` | `/api/ask-text` | Direct text question + image frames query. |
-| `POST` | `/api/reset` | Clears conversation context history. |
-
----
-
-## 🧪 Automated Testing
-
-Run the automated pytest test suite:
-```bash
-pytest -v tests/
-```
-
-All 16 unit and pipeline tests pass:
-- ✅ `test_depth.py`: Depth Anything V2 physical metric distance calculations.
-- ✅ `test_detector.py`: Multi-model deduplication, spatial tool tracking, and name normalizations.
-- ✅ `test_voice_assistant_endpoints.py`: FastAPI endpoints (`/status`, `/reset`, `/ask`, `/ask-text`).
-- ✅ `test_voice_assistant_factories.py`: Provider initialization (Gemini, NVIDIA, Sarvam, Ollama, Mac).
-- ✅ `test_voice_assistant_pipeline.py`: End-to-end multimodal pipeline turn execution.
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License.
+**Backend**: Python 3.13 · FastAPI · Uvicorn · PyTorch (MPS) · Ultralytics · HuggingFace Transformers · OpenCV · NumPy  
+**Frontend**: Vanilla JS (ES Modules) · Three.js · @huggingface/transformers (WebGPU) · MediaRecorder API  
+**AI APIs**: Google Gemini Flash · Sarvam Bulbul TTS  
+**Models**: YOLO11 · YOLO-World v2 · Depth Anything V2 (PyTorch + ONNX WebGPU) · YOLO-Pose
