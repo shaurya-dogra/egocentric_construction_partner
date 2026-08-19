@@ -83,12 +83,32 @@
             <span class="meta-tag buffer-tag" id="bufferStatusTag">● Buffer: 6/6 (1 FPS)</span>
             <span class="meta-tag fps-tag" id="copilotFpsTag">30 FPS</span>
           </div>
+        <!-- View Mode Tabs Bar (Real-Time HUD Switching) -->
+        <div class="video-mode-tabs" id="videoModeTabs">
+          <button type="button" class="view-tab-btn active" data-mode="all" title="Full Combined Copilot HUD (YOLO + Tools + PPE + Pose + Depth)">
+            <span class="tab-icon">🎯</span> Combined HUD
+          </button>
+          <button type="button" class="view-tab-btn" data-mode="raw" title="Normal raw camera stream without overlays">
+            <span class="tab-icon">📹</span> Normal Video
+          </button>
+          <button type="button" class="view-tab-btn" data-mode="pose" title="3D Pose skeletons with 3D eye gaze vectors and posture angles">
+            <span class="tab-icon">👁️</span> 3D Pose & Eye View
+          </button>
+          <button type="button" class="view-tab-btn" data-mode="depth" title="Gradient Depth Map with 3D depth contours and metric distance pins">
+            <span class="tab-icon">🌊</span> 3D Gradient Depth
+          </button>
+          <button type="button" class="view-tab-btn" data-mode="ppe" title="PPE Compliance audit view (Hardhats, Vests, Missing Gear warnings)">
+            <span class="tab-icon">🦺</span> PPE Only
+          </button>
+          <button type="button" class="view-tab-btn" data-mode="objects" title="Objects & Tools only (Drills, Saws, Hammers, Machinery, Carrying Links)">
+            <span class="tab-icon">🔨</span> Objects & Tools
+          </button>
         </div>
 
         <!-- Video Stream Stage -->
         <div class="video-stage">
           <!-- Live MJPEG Stream from SafetyCopilot Engine -->
-          <img id="copilotVideoFeed" src="/api/video_feed" class="live-stream-img" alt="Safety Copilot YOLO Stream" />
+          <img id="copilotVideoFeed" src="/api/video_feed?mode=all" class="live-stream-img" alt="Safety Copilot Stream" />
           
           <!-- Hidden fallback elements for client-side capture -->
           <video id="cameraVideo" class="hidden" autoplay playsinline muted></video>

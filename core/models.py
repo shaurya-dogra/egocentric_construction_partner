@@ -305,3 +305,4 @@ class FrameResult:
     alerts: list[Alert] = field(default_factory=list)
     active_zones: list[DangerZone] = field(default_factory=list)
     fps: float = 0.0
+    depth_map: Optional[Any] = None

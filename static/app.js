@@ -52,9 +52,26 @@ document.addEventListener('DOMContentLoaded', () => {
   let totalTurnsCount = 0;
   let frameMode = 'TEMPORAL_FRAMES'; // 'TEMPORAL_FRAMES' | 'SINGLE_FRAME'
 
+  let currentViewMode = 'all'; // 'all' | 'raw' | 'pose' | 'depth' | 'ppe' | 'objects'
+
   // ==========================================
   // Live Stream & Mode Controls
   // ==========================================
+  const viewTabBtns = document.querySelectorAll('.view-tab-btn');
+  viewTabBtns.forEach((tabBtn) => {
+    tabBtn.addEventListener('click', () => {
+      const mode = tabBtn.getAttribute('data-mode') || 'all';
+      currentViewMode = mode;
+
+      viewTabBtns.forEach((b) => b.classList.remove('active'));
+      tabBtn.classList.add('active');
+
+      // Update stream source with cachebuster
+      copilotVideoFeed.src = `/api/video_feed?mode=${encodeURIComponent(mode)}&t=${Date.now()}`;
+      showToast(`Switched to ${tabBtn.textContent.trim()}`, 'success');
+    });
+  });
+
   function setFrameMode(mode) {
     frameMode = mode;
     if (mode === 'TEMPORAL_FRAMES') {
@@ -70,7 +87,7 @@ document.addEventListener('DOMContentLoaded', () => {
   btnModeSingle.addEventListener('click', () => setFrameMode('SINGLE_FRAME'));
 
   btnRefreshFeed.addEventListener('click', () => {
-    copilotVideoFeed.src = `/api/video_feed?t=${Date.now()}`;
+    copilotVideoFeed.src = `/api/video_feed?mode=${encodeURIComponent(currentViewMode)}&t=${Date.now()}`;
     showToast('Reconnected to Safety Copilot video stream', 'success');
   });
 

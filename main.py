@@ -516,6 +516,7 @@ class SafetyCopilot:
             alerts=alerts,
             active_zones=self.zone_manager.get_all_zones() + machine_zones,
             fps=self._current_fps,
+            depth_map=latest_dmap,
         )
 
         # ── 9. Update CopilotBridge for Live Web Dashboard ──
@@ -526,6 +527,8 @@ class SafetyCopilot:
                 display_frame=display_frame,
                 raw_frame=frame,
                 frame_result=result,
+                depth_map=latest_dmap,
+                overlay_renderer=self.overlay_renderer,
                 fps=self._current_fps
             )
         except Exception:

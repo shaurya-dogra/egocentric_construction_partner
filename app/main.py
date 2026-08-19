@@ -90,10 +90,10 @@ async def serve_index():
 
 
 @app.get("/api/video_feed")
-async def video_feed():
-    """Stream real-time Safety Copilot YOLO + Pose + Depth annotated video frames."""
+async def video_feed(mode: str = "all"):
+    """Stream real-time Safety Copilot video frames in the requested view mode (all, raw, pose, depth, ppe, objects)."""
     return StreamingResponse(
-        copilot_bridge.get_video_frame_stream(),
+        copilot_bridge.get_video_frame_stream(mode=mode),
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
 

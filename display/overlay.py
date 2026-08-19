@@ -360,29 +360,41 @@ class OverlayRenderer:
 
     # ── Main entry point ────────────────────────────────────
 
-    def render(self, frame: np.ndarray, result: FrameResult) -> np.ndarray:
-        """Draw all HUD elements onto *frame* and return the annotated copy.
+    def render(self, frame: np.ndarray, result: FrameResult, mode: str = "all") -> np.ndarray:
+        """Draw HUD elements onto *frame* based on the selected view mode.
 
-        Parameters
-        ----------
-        frame:
-            BGR image from OpenCV (will be copied, original is not modified).
-        result:
-            Complete pipeline output for this frame.
-
-        Returns
-        -------
-        np.ndarray
-            Annotated frame with all overlays drawn.
+        Modes:
+        - ``all``: Full combined HUD (YOLO, Tools, PPE, Pose, Gaze, Depth tags, Alerts, FPS).
+        - ``raw``: Clean raw camera frame without any overlays.
+        - ``pose`` / ``pose_3d``: 3D Pose skeletons, 3D eye gaze perspective vectors, and posture angles.
+        - ``depth`` / ``depth_3d``: 3D Gradient Depth Colormap with isolines and metric distance pins.
+        - ``ppe``: PPE Compliance audit only (Hardhats, Vests, Missing Gear warnings).
+        - ``objects``: Objects & Tools only (Heavy machinery, power tools, carrying links, distances).
         """
+        mode_clean = (mode or "all").lower().strip()
+        if mode_clean == "raw":
+            return frame.copy()
+        elif mode_clean in ("pose", "pose_3d"):
+            return self._render_pose_3d(frame, result)
+        elif mode_clean in ("depth", "depth_3d"):
+            return self._render_depth_3d(frame, result)
+        elif mode_clean == "ppe":
+            return self._render_ppe_only(frame, result)
+        elif mode_clean == "objects":
+            return self._render_objects_only(frame, result)
+        else:
+            return self._render_all(frame, result)
+
+    def _render_all(self, frame: np.ndarray, result: FrameResult) -> np.ndarray:
+        """Full combined HUD."""
         out = frame.copy()
 
-        # 1. Danger zones (semi-transparent polygons)
+        # 1. Danger zones
         if self.show_danger_zones:
             for zone in result.active_zones:
                 self._draw_zone(out, zone)
 
-        # 2. Bounding boxes with class labels and track IDs
+        # 2. Bounding boxes
         for det in result.detections:
             self._draw_bbox(out, det, result.tracked_objects)
 
@@ -390,28 +402,244 @@ class OverlayRenderer:
         if self.show_keypoints:
             for pose in result.poses:
                 self._draw_skeleton(out, pose.keypoints)
-
-                # 4. Gaze direction lines
                 if self.show_gaze_lines and pose.head_yaw is not None:
                     self._draw_gaze_line(out, pose)
 
-        # 5. Hazard state indicators
+        # 4. Hazard state indicators
         for hazard in result.hazards:
             self._draw_hazard_indicator(out, hazard)
 
-        # 6. Alert banner
+        # 5. Alert banner
         if result.alerts:
             most_severe = max(result.alerts, key=lambda a: list(Severity).index(a.severity))
             self._draw_alert_banner(out, most_severe)
+
+        # 6. Tool carrying links
+        self._draw_tool_carrying_links(out, result)
 
         # 7. FPS counter
         if self.show_fps:
             self._draw_fps(out, result.fps)
 
-        # 8. Tool carrying links (wrist to tool lines)
+        return out
+
+    def _render_pose_3d(self, frame: np.ndarray, result: FrameResult) -> np.ndarray:
+        """Render 3D Pose skeletons with 3D eye gaze vectors and posture cues."""
+        h, w = frame.shape[:2]
+        # Darkened ambient background for high-contrast luminous skeleton HUD
+        out = cv2.addWeighted(frame, 0.45, np.zeros_like(frame), 0.55, 0)
+
+        # Draw 17-keypoint skeletons & 3D eye gaze projections
+        for pose in result.poses:
+            if pose.keypoints is None or len(pose.keypoints) < 17:
+                continue
+
+            # Draw glowing skeleton
+            self._draw_skeleton(out, pose.keypoints)
+
+            # 3D Eye View & Perspective Gaze Cone
+            if len(pose.keypoints) > KEYPOINT_NOSE:
+                nx, ny, nc = pose.keypoints[KEYPOINT_NOSE]
+                if nc >= 0.25 and pose.head_yaw is not None:
+                    yaw_deg = int(pose.head_yaw - 90)
+                    dir_str = "Ahead" if abs(yaw_deg) < 15 else ("Right" if yaw_deg > 0 else "Left")
+                    angle_rad = math.radians(pose.head_yaw)
+                    
+                    ray_len = 110
+                    ex = int(nx + ray_len * math.cos(angle_rad))
+                    ey = int(ny - ray_len * math.sin(angle_rad))
+
+                    # 3D perspective gaze cone
+                    if len(pose.keypoints) > KEYPOINT_RIGHT_EYE:
+                        lx, ly, lc = pose.keypoints[KEYPOINT_LEFT_EYE]
+                        rx, ry, rc = pose.keypoints[KEYPOINT_RIGHT_EYE]
+                        if lc >= 0.2 and rc >= 0.2:
+                            cone_overlay = out.copy()
+                            pts = np.array([[int(lx), int(ly)], [int(rx), int(ry)], [ex, ey]], dtype=np.int32)
+                            cv2.fillPoly(cone_overlay, [pts], (0, 255, 255))
+                            cv2.addWeighted(cone_overlay, 0.22, out, 0.78, 0, out)
+
+                    # Gaze central vector with depth tick marks
+                    cv2.line(out, (int(nx), int(ny)), (ex, ey), (0, 255, 255), 2, cv2.LINE_AA)
+                    for t in (0.35, 0.70, 1.0):
+                        tx = int(nx + t * ray_len * math.cos(angle_rad))
+                        ty = int(ny - t * ray_len * math.sin(angle_rad))
+                        cv2.circle(out, (tx, ty), 3 if t < 1.0 else 6, (0, 255, 255), -1)
+
+                    # Target reticle
+                    cv2.circle(out, (ex, ey), 10, (0, 255, 255), 1, cv2.LINE_AA)
+
+                    # Head Orientation Badge
+                    tid = f"Worker #{pose.person_track_id}" if pose.person_track_id else "Worker"
+                    posture = "Upright"
+                    if pose.body_angle is not None:
+                        if pose.body_angle > 55:
+                            posture = "Fall / Reclined"
+                        elif pose.body_angle > 35:
+                            posture = "Crouched"
+                        else:
+                            posture = f"Upright ({int(pose.body_angle)}°)"
+
+                    badge_text = f"{tid} | Gaze: {dir_str} ({abs(yaw_deg)}°) | {posture}"
+                    bx = max(10, int(nx - 80))
+                    by = max(30, int(ny - 35))
+                    (tw, th), _ = cv2.getTextSize(badge_text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+                    cv2.rectangle(out, (bx - 4, by - th - 6), (bx + tw + 6, by + 4), (20, 20, 20), -1)
+                    cv2.rectangle(out, (bx - 4, by - th - 6), (bx + tw + 6, by + 4), (0, 255, 255), 1)
+                    cv2.putText(out, badge_text, (bx, by - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA)
+
+        # Mode Banner Top Left
+        self._draw_mode_banner(out, "👁️ 3D POSE & EYE VIEW", (0, 255, 255))
+        if self.show_fps:
+            self._draw_fps(out, result.fps)
+        return out
+
+    def _render_depth_3d(self, frame: np.ndarray, result: FrameResult) -> np.ndarray:
+        """Render 3D Gradient Depth Colormap with isolines and metric distance pins."""
+        h, w = frame.shape[:2]
+        dmap = getattr(result, "depth_map", None)
+
+        if dmap is not None and isinstance(dmap, np.ndarray) and dmap.size > 0:
+            # Resize depth map if needed
+            if dmap.shape[:2] != (h, w):
+                dmap_resized = cv2.resize(dmap, (w, h), interpolation=cv2.INTER_LINEAR)
+            else:
+                dmap_resized = dmap
+
+            # Normalize metric depth (0.5m to 12.0m)
+            norm_d = np.clip((dmap_resized - 0.5) / 11.5, 0.0, 1.0)
+            u8_d = (norm_d * 255).astype(np.uint8)
+            depth_colored = cv2.applyColorMap(u8_d, cv2.COLORMAP_TURBO)
+
+            # Blend with 3D structural edges
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 40, 120)
+            depth_colored[edges > 0] = (255, 255, 255)
+            out = cv2.addWeighted(depth_colored, 0.85, frame, 0.15, 0)
+        else:
+            # Fallback gradient preview
+            grad = np.linspace(0, 255, w, dtype=np.uint8)
+            grad_img = np.tile(grad, (h, 1))
+            depth_colored = cv2.applyColorMap(grad_img, cv2.COLORMAP_TURBO)
+            out = cv2.addWeighted(depth_colored, 0.70, frame, 0.30, 0)
+
+        # Draw 3D Depth Grid lines
+        for y_line in range(60, h, 90):
+            cv2.line(out, (0, y_line), (w - 50, y_line), (80, 80, 80), 1, cv2.LINE_AA)
+        for x_line in range(80, w - 50, 120):
+            cv2.line(out, (x_line, 0), (x_line, h), (80, 80, 80), 1, cv2.LINE_AA)
+
+        # Overlay 3D Metric Coordinate Pins at tracked object centers
+        for obj in result.tracked_objects.values():
+            if not obj.is_active:
+                continue
+            cx, cy = int(obj.center[0]), int(obj.center[1])
+            dist_val = obj.distance_meters
+            dist_str = f"{dist_val:.1f}m" if dist_val is not None else "Depth Active"
+
+            # Draw Crosshair Pin
+            cv2.line(out, (cx - 12, cy), (cx + 12, cy), (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(out, (cx, cy - 12), (cx, cy + 12), (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.circle(out, (cx, cy), 6, (0, 255, 255), 1, cv2.LINE_AA)
+
+            tag = f"⌖ {obj.class_name} #{obj.track_id} [{dist_str}]"
+            (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+            cv2.rectangle(out, (cx + 10, cy - th - 4), (cx + tw + 18, cy + 6), (10, 10, 10), -1)
+            cv2.rectangle(out, (cx + 10, cy - th - 4), (cx + tw + 18, cy + 6), (0, 255, 255), 1)
+            cv2.putText(out, tag, (cx + 14, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # Draw Vertical Depth Scale Bar on right edge
+        bar_x = w - 35
+        bar_h = h - 80
+        for y_offset in range(bar_h):
+            val = int(255 * (y_offset / bar_h))
+            color_cell = cv2.applyColorMap(np.array([[val]], dtype=np.uint8), cv2.COLORMAP_TURBO)[0, 0]
+            b, g, r = int(color_cell[0]), int(color_cell[1]), int(color_cell[2])
+            cv2.line(out, (bar_x, 40 + y_offset), (bar_x + 18, 40 + y_offset), (b, g, r), 1)
+
+        cv2.rectangle(out, (bar_x - 1, 39), (bar_x + 19, 40 + bar_h), (255, 255, 255), 1)
+        cv2.putText(out, "0.5m", (bar_x - 36, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(out, "12m+", (bar_x - 36, 35 + bar_h), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # Mode Banner
+        self._draw_mode_banner(out, "🌊 3D GRADIENT DEPTH MAP (Depth-Anything-V2)", (0, 215, 255))
+        if self.show_fps:
+            self._draw_fps(out, result.fps)
+        return out
+
+    def _render_ppe_only(self, frame: np.ndarray, result: FrameResult) -> np.ndarray:
+        """Render dedicated PPE compliance audit view."""
+        out = frame.copy()
+
+        # Draw danger zones
+        if self.show_danger_zones:
+            for zone in result.active_zones:
+                self._draw_zone(out, zone)
+
+        # PPE Detections Only
+        for det in result.detections:
+            if det.is_ppe or "hard_hat" in det.class_name or "vest" in det.class_name or "mask" in det.class_name or "goggle" in det.class_name or "glove" in det.class_name or "boot" in det.class_name:
+                self._draw_bbox(out, det, result.tracked_objects)
+
+        # Tracked Worker PPE Compliance Cards
+        for track_id, worker in result.tracked_objects.items():
+            if worker.class_name != "person" or not worker.is_active:
+                continue
+
+            x1, y1, x2, y2 = worker.bbox
+            ppe_state = result.worker_ppe_states.get(track_id)
+            is_compliant = ppe_state.is_compliant if ppe_state else True
+            halo_color = (0, 255, 0) if is_compliant else (0, 0, 255)
+
+            # Glowing compliance border
+            cv2.rectangle(out, (x1 - 2, y1 - 2), (x2 + 2, y2 + 2), halo_color, 2)
+
+            # Status Badge
+            status_title = f"Worker #{track_id} {'[COMPLIANT]' if is_compliant else '[PPE VIOLATION]'}"
+            h_stat = "✓ Hardhat" if (ppe_state and ppe_state.has_hardhat) else "✗ Hardhat"
+            v_stat = "✓ Vest" if (ppe_state and ppe_state.has_vest) else "✗ Vest"
+            summary_txt = f"{status_title} | {h_stat} | {v_stat}"
+
+            (tw, th), _ = cv2.getTextSize(summary_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+            by = max(24, y1 - 6)
+            cv2.rectangle(out, (x1, by - th - 6), (x1 + tw + 8, by), (15, 15, 15), -1)
+            cv2.rectangle(out, (x1, by - th - 6), (x1 + tw + 8, by), halo_color, 1)
+            cv2.putText(out, summary_txt, (x1 + 4, by - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.42, halo_color, 1, cv2.LINE_AA)
+
+        # Active PPE alerts
+        if result.alerts:
+            ppe_alerts = [a for a in result.alerts if "ppe" in a.message.lower() or "hardhat" in a.message.lower() or "vest" in a.message.lower()]
+            if ppe_alerts:
+                self._draw_alert_banner(out, ppe_alerts[0])
+
+        self._draw_mode_banner(out, "🦺 PPE COMPLIANCE AUDIT VIEW", (0, 255, 0))
+        if self.show_fps:
+            self._draw_fps(out, result.fps)
+        return out
+
+    def _render_objects_only(self, frame: np.ndarray, result: FrameResult) -> np.ndarray:
+        """Render Objects & Tools scanner only."""
+        out = frame.copy()
+
+        # Non-PPE detections only
+        for det in result.detections:
+            if not det.is_ppe:
+                self._draw_bbox(out, det, result.tracked_objects)
+
+        # Tool carrying links
         self._draw_tool_carrying_links(out, result)
 
+        self._draw_mode_banner(out, "🔨 OBJECTS & TOOLS DETECTION VIEW", (238, 130, 238))
+        if self.show_fps:
+            self._draw_fps(out, result.fps)
         return out
+
+    def _draw_mode_banner(self, frame: np.ndarray, title: str, color: tuple[int, int, int]) -> None:
+        """Draw a sleek mode pill badge in the top-left."""
+        (tw, th), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        cv2.rectangle(frame, (10, 8), (20 + tw, 18 + th + 6), (20, 20, 20), -1)
+        cv2.rectangle(frame, (10, 8), (20 + tw, 18 + th + 6), color, 1)
+        cv2.putText(frame, title, (15, 14 + th), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
     def _draw_tool_carrying_links(self, frame: np.ndarray, result: FrameResult) -> None:
         """Draw lines connecting worker wrists to tools in close proximity."""
@@ -451,7 +679,6 @@ class OverlayRenderer:
                             dist = math.hypot(tx - wrist[0], ty - wrist[1])
                             if dist <= 140:
                                 wx, wy = int(wrist[0]), int(wrist[1])
-                                # Draw a violet line from hand to tool
                                 cv2.line(frame, (wx, wy), (tx, ty), (238, 130, 238), 2, cv2.LINE_AA)
                                 cv2.putText(
                                     frame,

@@ -37,7 +37,11 @@ class CopilotBridge:
 
         # Live Frame State
         self._latest_jpeg: Optional[bytes] = None
-        self._latest_raw_jpeg: Optional[bytes] = None
+        self._latest_raw_frame: Optional[np.ndarray] = None
+        self._latest_result: Any = None
+        self._latest_depth_map: Optional[np.ndarray] = None
+        self._overlay_renderer: Optional[Any] = None
+        self._mode_cache: Dict[str, bytes] = {}
         self._latest_timestamp: float = 0.0
         self._fps: float = 0.0
         self._tracked_count: int = 0
@@ -57,6 +61,8 @@ class CopilotBridge:
         display_frame: np.ndarray,
         raw_frame: Optional[np.ndarray] = None,
         frame_result: Any = None,
+        depth_map: Optional[np.ndarray] = None,
+        overlay_renderer: Optional[Any] = None,
         fps: float = 0.0
     ) -> None:
         """Called by SafetyCopilot on every processed frame."""
@@ -64,13 +70,6 @@ class CopilotBridge:
             # Encode annotated display frame to JPEG
             _, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             jpeg_bytes = jpeg_buf.tobytes()
-
-            raw_jpeg_bytes = None
-            if raw_frame is not None:
-                _, raw_buf = cv2.imencode(".jpg", raw_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                raw_jpeg_bytes = raw_buf.tobytes()
-            else:
-                raw_jpeg_bytes = jpeg_bytes
 
             now = time.time()
 
@@ -91,7 +90,14 @@ class CopilotBridge:
 
             with self._lock:
                 self._latest_jpeg = jpeg_bytes
-                self._latest_raw_jpeg = raw_jpeg_bytes
+                self._latest_raw_frame = raw_frame.copy() if raw_frame is not None else None
+                self._latest_result = frame_result
+                self._latest_depth_map = depth_map
+                if overlay_renderer is not None:
+                    self._overlay_renderer = overlay_renderer
+                self._mode_cache.clear()
+                self._mode_cache["all"] = jpeg_bytes
+
                 self._latest_timestamp = now
                 self._fps = fps
                 self._tracked_count = tracked_cnt
@@ -112,9 +118,38 @@ class CopilotBridge:
         except Exception as e:
             logger.debug(f"Error in CopilotBridge.update_frame: {e}")
 
-    def get_latest_jpeg(self) -> Optional[bytes]:
-        """Return the latest annotated frame JPEG bytes."""
+    def get_latest_jpeg(self, mode: str = "all") -> Optional[bytes]:
+        """Return the latest frame JPEG bytes rendered in the selected view mode."""
+        mode_clean = (mode or "all").lower().strip()
         with self._lock:
+            if mode_clean in self._mode_cache:
+                return self._mode_cache[mode_clean]
+
+            if self._latest_raw_frame is None or self._latest_result is None:
+                return self._latest_jpeg
+
+            try:
+                # If raw mode requested
+                if mode_clean == "raw":
+                    _, raw_buf = cv2.imencode(".jpg", self._latest_raw_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    encoded = raw_buf.tobytes()
+                    self._mode_cache["raw"] = encoded
+                    return encoded
+
+                # Render with OverlayRenderer
+                if self._overlay_renderer is not None:
+                    rendered = self._overlay_renderer.render(
+                        self._latest_raw_frame,
+                        self._latest_result,
+                        mode=mode_clean
+                    )
+                    _, buf = cv2.imencode(".jpg", rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    encoded = buf.tobytes()
+                    self._mode_cache[mode_clean] = encoded
+                    return encoded
+            except Exception as ex:
+                logger.debug(f"Error generating mode '{mode_clean}' JPEG: {ex}")
+
             return self._latest_jpeg
 
     def get_latest_temporal_frames(self, max_frames: int = 8) -> List[Tuple[bytes, str]]:
@@ -141,15 +176,14 @@ class CopilotBridge:
                 "buffer_frames_count": len(self._temporal_ring_buffer)
             }
 
-    async def get_video_frame_stream(self):
-        """Async generator yielding MJPEG multipart stream chunks."""
+    async def get_video_frame_stream(self, mode: str = "all"):
+        """Async generator yielding MJPEG multipart stream chunks for a specific view mode."""
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
         blank_frame = None
 
         while True:
-            jpeg = self.get_latest_jpeg()
+            jpeg = self.get_latest_jpeg(mode=mode)
             if jpeg is None:
-                # If copilot is starting up, yield a clean placeholder frame
                 if blank_frame is None:
                     img = np.zeros((480, 640, 3), dtype=np.uint8)
                     cv2.putText(
@@ -186,11 +220,14 @@ class CopilotBridge:
                 def _hooked_process_frame(frame, timestamp, frame_number):
                     result = original_process_frame(frame, timestamp, frame_number)
                     try:
-                        display_frame = copilot.overlay_renderer.render(frame, result)
+                        latest_dmap = getattr(result, "depth_map", None)
+                        display_frame = copilot.overlay_renderer.render(frame, result, mode="all")
                         self.update_frame(
                             display_frame=display_frame,
                             raw_frame=frame,
                             frame_result=result,
+                            depth_map=latest_dmap,
+                            overlay_renderer=copilot.overlay_renderer,
                             fps=copilot._current_fps
                         )
                     except Exception as ex:
