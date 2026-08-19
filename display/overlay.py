@@ -358,6 +358,12 @@ class OverlayRenderer:
         self.zone_alpha: float = cfg.get("zone_alpha", 0.25)
         self.banner_height: int = cfg.get("banner_height", 50)
 
+        # Depth EMA state — mirrors v.fast depth GPUDepthRenderer temporal stabilization
+        # Smoothed min/max using 85% history weight + 15% current frame (EMA)
+        self._depth_smoothed_min: float = 0.0
+        self._depth_smoothed_max: float = 1.0
+        self._depth_has_range: bool = False
+
     # ── Main entry point ────────────────────────────────────
 
     def render(self, frame: np.ndarray, result: FrameResult, mode: str = "all") -> np.ndarray:
@@ -493,41 +499,102 @@ class OverlayRenderer:
         return out
 
     def _render_depth_3d(self, frame: np.ndarray, result: FrameResult) -> np.ndarray:
-        """Render pure 2D TURBO gradient depth map — no video blend, just the colormap."""
+        """Render pure 2D TURBO gradient depth map.
+
+        Architecture mirrors v.fast depth GPUDepthRenderer:
+        - Adaptive dynamic range via 64-sample strided scan of the depth array
+        - EMA temporal smoothing on min/max (85% history, 15% current) to prevent flicker
+        - Analytical TURBO colormap polynomial (identical to WGSL colormapTurbo shader)
+        - Pure colormap output, no video blending
+        """
         h, w = frame.shape[:2]
         dmap = getattr(result, "depth_map", None)
 
         if dmap is not None and isinstance(dmap, np.ndarray) and dmap.size > 0:
-            # Resize to match frame if needed
+            # --- Resize to output resolution ---
             if dmap.shape[:2] != (h, w):
-                dmap_resized = cv2.resize(dmap.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+                dmap_f = cv2.resize(dmap.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
             else:
-                dmap_resized = dmap.astype(np.float32)
+                dmap_f = dmap.astype(np.float32)
 
-            # Normalize metric depth 0.5m → 12.0m to 0–255 (TURBO: blue=near, red=far)
-            norm_d = np.clip((dmap_resized - 0.5) / 11.5, 0.0, 1.0)
-            u8_d = (norm_d * 255).astype(np.uint8)
-            # Pure colormap — no blending with original frame
-            out = cv2.applyColorMap(u8_d, cv2.COLORMAP_TURBO)
+            flat = dmap_f.ravel()
+            n = len(flat)
+
+            # --- Adaptive range: 64-sample strided scan (mirrors GPU renderer) ---
+            step = max(1, n // 64)
+            sampled = flat[::step]
+            current_min = float(sampled.min())
+            current_max = float(sampled.max())
+            if current_max <= current_min:
+                current_max = current_min + 1.0
+
+            # --- EMA temporal smoothing (85% history, 15% current) ---
+            if not self._depth_has_range:
+                self._depth_smoothed_min = current_min
+                self._depth_smoothed_max = current_max
+                self._depth_has_range = True
+            else:
+                self._depth_smoothed_min = self._depth_smoothed_min * 0.85 + current_min * 0.15
+                self._depth_smoothed_max = self._depth_smoothed_max * 0.85 + current_max * 0.15
+
+            # --- Normalize using smoothed dynamic range ---
+            d_range = self._depth_smoothed_max - self._depth_smoothed_min
+            if d_range < 1e-5:
+                d_range = 1.0
+            norm = np.clip((dmap_f - self._depth_smoothed_min) / d_range, 0.0, 1.0)
+
+            # --- Analytical TURBO colormap (matches WGSL colormapTurbo shader exactly) ---
+            # Source: gpu-renderer.ts colormapTurbo() polynomial
+            x = norm.astype(np.float32)
+            r = np.clip(0.13572138 + 4.61539260 * x - 42.66032258 * x**2 +
+                        132.13108234 * x**3 - 152.94239396 * x**4 + 59.28637943 * x**5, 0.0, 1.0)
+            g = np.clip(0.09140261 + 2.19418839 * x + 4.84296658 * x**2 -
+                        14.18503333 * x**3 + 4.27729857 * x**4 + 2.82956604 * x**5, 0.0, 1.0)
+            b = np.clip(0.10667447 + 12.64194608 * x - 60.58204836 * x**2 +
+                        110.36276771 * x**3 - 89.90310912 * x**4 + 27.34824973 * x**5, 0.0, 1.0)
+
+            # Stack to BGR (OpenCV channel order)
+            out = np.stack([
+                (b * 255).astype(np.uint8),
+                (g * 255).astype(np.uint8),
+                (r * 255).astype(np.uint8),
+            ], axis=-1)
+
         else:
-            # Fallback: show a horizontal gradient so you can see the colormap is live
-            grad = np.linspace(0, 255, w, dtype=np.uint8)
-            grad_img = np.tile(grad, (h, 1))
-            out = cv2.applyColorMap(grad_img, cv2.COLORMAP_TURBO)
+            # Fallback: horizontal gradient so the tab shows it's live
+            grad = np.linspace(0.0, 1.0, w, dtype=np.float32)
+            x = np.tile(grad, (h, 1))
+            r = np.clip(0.13572138 + 4.61539260 * x - 42.66032258 * x**2 +
+                        132.13108234 * x**3 - 152.94239396 * x**4 + 59.28637943 * x**5, 0.0, 1.0)
+            g = np.clip(0.09140261 + 2.19418839 * x + 4.84296658 * x**2 -
+                        14.18503333 * x**3 + 4.27729857 * x**4 + 2.82956604 * x**5, 0.0, 1.0)
+            b = np.clip(0.10667447 + 12.64194608 * x - 60.58204836 * x**2 +
+                        110.36276771 * x**3 - 89.90310912 * x**4 + 27.34824973 * x**5, 0.0, 1.0)
+            out = np.stack([
+                (b * 255).astype(np.uint8),
+                (g * 255).astype(np.uint8),
+                (r * 255).astype(np.uint8),
+            ], axis=-1)
 
-        # Thin depth scale bar on right edge
-        bar_x = w - 30
+        # --- Thin TURBO scale bar on right edge ---
+        bar_x = w - 28
         bar_h = h - 60
-        for y_offset in range(bar_h):
-            val = int(255 * (y_offset / bar_h))
-            color_cell = cv2.applyColorMap(np.array([[val]], dtype=np.uint8), cv2.COLORMAP_TURBO)[0, 0]
-            cv2.line(out, (bar_x, 30 + y_offset), (bar_x + 14, 30 + y_offset),
-                     (int(color_cell[0]), int(color_cell[1]), int(color_cell[2])), 1)
-        cv2.rectangle(out, (bar_x - 1, 29), (bar_x + 15, 30 + bar_h), (255, 255, 255), 1)
-        cv2.putText(out, "0.5m", (bar_x - 30, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(out, "12m", (bar_x - 28, 26 + bar_h), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 255, 255), 1, cv2.LINE_AA)
+        for y_off in range(bar_h):
+            t = y_off / bar_h
+            bv = np.clip(0.10667447 + 12.64194608*t - 60.58204836*t**2 + 110.36276771*t**3 - 89.90310912*t**4 + 27.34824973*t**5, 0, 1)
+            gv = np.clip(0.09140261  +  2.19418839*t +  4.84296658*t**2 -  14.18503333*t**3 +  4.27729857*t**4 +  2.82956604*t**5, 0, 1)
+            rv = np.clip(0.13572138  +  4.61539260*t - 42.66032258*t**2 + 132.13108234*t**3 - 152.94239396*t**4 + 59.28637943*t**5, 0, 1)
+            cv2.line(out, (bar_x, 30 + y_off), (bar_x + 12, 30 + y_off),
+                     (int(bv*255), int(gv*255), int(rv*255)), 1)
+        cv2.rectangle(out, (bar_x - 1, 29), (bar_x + 13, 30 + bar_h), (200, 200, 200), 1)
 
-        # Distance pins for tracked objects
+        # Min/max labels using smoothed adaptive values
+        near_label = f"{self._depth_smoothed_min:.1f}m" if self._depth_has_range else "near"
+        far_label  = f"{self._depth_smoothed_max:.1f}m" if self._depth_has_range else "far"
+        cv2.putText(out, near_label, (bar_x - 28, 34),  cv2.FONT_HERSHEY_SIMPLEX, 0.3, (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.putText(out, far_label,  (bar_x - 28, 26 + bar_h), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (220, 220, 220), 1, cv2.LINE_AA)
+
+        # --- Distance pins for active tracked objects ---
         for obj in result.tracked_objects.values():
             if not obj.is_active:
                 continue
@@ -536,8 +603,8 @@ class OverlayRenderer:
             dist_str = f"{dist_val:.1f}m" if dist_val is not None else "?"
             tag = f"{obj.class_name} [{dist_str}]"
             (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
-            cv2.rectangle(out, (cx + 8, cy - th - 4), (cx + tw + 14, cy + 4), (0, 0, 0), -1)
-            cv2.putText(out, tag, (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.rectangle(out, (cx + 6, cy - th - 3), (cx + tw + 10, cy + 3), (0, 0, 0), -1)
+            cv2.putText(out, tag, (cx + 8, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.circle(out, (cx, cy), 3, (255, 255, 255), -1)
 
         self._draw_mode_banner(out, "DEPTH MAP", (0, 215, 255))
