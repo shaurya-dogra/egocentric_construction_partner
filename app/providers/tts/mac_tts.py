@@ -14,8 +14,9 @@ logger = logging.getLogger("kaya.tts.mac")
 class MacNativeTTSProvider(TTSProvider):
     """High-performance on-device TTS using macOS built-in speech synthesis."""
 
-    def __init__(self, voice: str = "Samantha"):
+    def __init__(self, voice: str = "Samantha", rate: int = 215):
         self.voice = voice
+        self.rate = rate
         self.say_path = shutil.which("say")
 
     @property
@@ -43,6 +44,7 @@ class MacNativeTTSProvider(TTSProvider):
             cmd = [
                 self.say_path,
                 "-v", self.voice,
+                "-r", str(self.rate),
                 "--data-format=LEI16@22050",
                 "-o", temp_wav_path,
                 clean_text
@@ -60,10 +62,12 @@ class MacNativeTTSProvider(TTSProvider):
                 logger.warning(f"Failed with voice {self.voice}: {stderr.decode()}. Retrying with default voice...")
                 fallback_cmd = [
                     self.say_path,
+                    "-r", str(self.rate),
                     "--data-format=LEI16@22050",
                     "-o", temp_wav_path,
                     clean_text
                 ]
+
                 fallback_proc = await asyncio.create_subprocess_exec(
                     *fallback_cmd,
                     stdout=asyncio.subprocess.PIPE,

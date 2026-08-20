@@ -10,15 +10,16 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 logger = logging.getLogger("core.depth_estimator")
 
+
 class DepthEstimator:
     def __init__(self, config: dict, device_override: Optional[str] = None):
         self.config = config
         self.enabled = config.get("enabled", True)
-        self.model_path = config.get("path", "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf")
+        self.model_path = config.get("path", "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf")
         self.is_metric = bool(config.get("is_metric", "metric" in self.model_path.lower()))
         self.scale_factor = float(config.get("scale_factor", 1.0 if self.is_metric else 15.0))
         self.run_every_n = int(config.get("run_every_n_frames", 3))
-        
+
         if not self.enabled:
             logger.info("Depth Estimation is disabled in configuration.")
             return
@@ -28,7 +29,7 @@ class DepthEstimator:
             self.device = device_override
         else:
             self.device = "mps" if torch.backends.mps.is_available() else "cpu"
-            
+
         logger.info(
             "Loading monocular depth estimation model '%s' (metric=%s) on device '%s'...",
             self.model_path,
@@ -89,7 +90,7 @@ class DepthEstimator:
         """
         if not self.enabled or frame is None:
             return None
-            
+
         try:
             h_orig, w_orig = frame.shape[:2]
 
@@ -105,16 +106,16 @@ class DepthEstimator:
             # Convert BGR (OpenCV) to RGB (PIL)
             rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(rgb_frame)
-            
+
             inputs = self.processor(images=pil_image, return_tensors="pt").to(self.device)
-            
+
             with torch.no_grad():
                 outputs = self.model(**inputs)
                 predicted_depth = outputs.predicted_depth
-                
+
             # Remove batch dimension
             depth_map = predicted_depth.squeeze(0).cpu().numpy()
-            
+
             # Resize depth map back to the original image dimensions
             depth_map_resized = cv2.resize(depth_map, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
             return depth_map_resized
@@ -124,40 +125,62 @@ class DepthEstimator:
 
     def get_distance(self, bbox: Tuple[int, int, int, int], depth_map: np.ndarray) -> Optional[float]:
         """Calculates the estimated metric distance (in meters) to the object in the bbox.
-        Uses the median depth value inside the bbox to be robust against background/outliers.
+
+        Uses foreground-focused core sampling (inner 50% box and 25th-35th percentile)
+        to isolate the object/person from background walls and clutter.
         """
         if depth_map is None:
             return None
-            
-        h, w = depth_map.shape
+
+        h, w = depth_map.shape[:2]
         x1, y1, x2, y2 = bbox
-        
+
         # Clip bbox to depth map boundaries
         x1 = max(0, min(w - 1, int(x1)))
         y1 = max(0, min(h - 1, int(y1)))
         x2 = max(0, min(w - 1, int(x2)))
         y2 = max(0, min(h - 1, int(y2)))
-        
+
         # Ensure valid area
         if x2 <= x1 or y2 <= y1:
             return None
-            
-        # Crop depth map at bbox
-        crop = depth_map[y1:y2, x1:x2]
+
+        # Sample the inner 50% core of the bounding box to avoid background edge bleeding
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        bw = max(2, int((x2 - x1) * 0.5))
+        bh = max(2, int((y2 - y1) * 0.5))
+
+        cx1 = max(0, min(w - 1, cx - bw // 2))
+        cx2 = max(0, min(w - 1, cx + bw // 2))
+        cy1 = max(0, min(h - 1, cy - bh // 2))
+        cy2 = max(0, min(h - 1, cy + bh // 2))
+
+        crop = depth_map[cy1:cy2, cx1:cx2]
+        if crop.size == 0:
+            crop = depth_map[y1:y2, x1:x2]
+
         if crop.size == 0:
             return None
-            
-        # Calculate median depth
-        median_val = float(np.median(crop))
-        
-        if median_val <= 1e-3 or np.isnan(median_val) or np.isinf(median_val):
+
+        # Filter out invalid / zero / inf values
+        valid_mask = (crop > 0.05) & ~np.isnan(crop) & ~np.isinf(crop)
+        valid_depths = crop[valid_mask]
+
+        if valid_depths.size == 0:
             return None
-            
+
         if self.is_metric:
-            # Direct physical metric depth prediction in meters
-            distance = median_val * self.scale_factor
+            # For metric depth: lower values = closer (in meters).
+            # The 25th-30th percentile represents the closest prominent foreground surface of the object.
+            foreground_metric = float(np.percentile(valid_depths, 25))
+            distance = foreground_metric * self.scale_factor
         else:
-            # Relative inverse depth (higher = closer, lower = further)
-            distance = self.scale_factor / median_val
-            
-        return round(distance, 1)
+            # For relative disparity: higher values = closer.
+            # The 75th percentile represents the closest prominent foreground surface.
+            foreground_relative = float(np.percentile(valid_depths, 75))
+            if foreground_relative <= 1e-3:
+                return None
+            distance = self.scale_factor / foreground_relative
+
+        return round(float(distance), 1)

@@ -23,3 +23,5 @@ pydantic-settings>=2.0.0    # Configuration and environment management
 python-multipart>=0.0.9     # Multipart file upload support for audio and images
 pytest>=8.0.0               # Testing framework
 pytest-asyncio>=0.23.0      # Async test support
+google-genai>=1.0.0         # Google Gemini Multimodal VLM, STT, and Embeddings API
+docling>=2.120.0            # Structure-aware PDF/document parsing and HybridChunker for RAG

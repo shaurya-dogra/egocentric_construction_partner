@@ -167,7 +167,7 @@ models:
       - "dustpan"
   depth:
     enabled: true
-    path: "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf"
+    path: "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
     confidence: 0.40
     run_every_n_frames: 3
     is_metric: true

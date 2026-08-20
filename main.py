@@ -718,6 +718,8 @@ def main() -> None:
         import threading
         import uvicorn
         from app.config import get_settings
+        from app.copilot_bridge import copilot_bridge
+        copilot_bridge._running = True  # Signal that main.py is the active video driver
         app_settings = get_settings()
         def _run_web():
             uvicorn.run("app.main:app", host=app_settings.host, port=app_settings.port, log_level="warning")

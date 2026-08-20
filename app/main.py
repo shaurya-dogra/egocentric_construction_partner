@@ -1,4 +1,4 @@
-"""FastAPI REST API server for Kaya Voice + Vision Assistant with Live YOLO Copilot Stream."""
+"""FastAPI REST API server for Kaya Voice + Vision Assistant with Live YOLO Copilot Stream & Docling RAG."""
 
 import logging
 import os
@@ -27,17 +27,19 @@ pipeline = KayaPipeline(settings=settings)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing Kaya Voice + Vision Assistant...")
-    logger.info(f"STT Provider:    {pipeline.stt_provider.name}")
-    logger.info(f"Vision Reasoner: {pipeline.vision_reasoner.name} ({pipeline.vision_reasoner.model_name})")
-    logger.info(f"TTS Provider:    {pipeline.tts_provider.name}")
-    logger.info(f"Frame Mode:      {settings.frame_mode} (Buffer: {settings.temporal_buffer_seconds}s @ {settings.temporal_fps} FPS, Max: {settings.temporal_max_frames} frames)")
+    logger.info("Initializing Kaya Voice + Vision + RAG Assistant...")
+    logger.info(f"STT Provider:        {pipeline.stt_provider.name}")
+    logger.info(f"Vision Reasoner:     {pipeline.vision_reasoner.name} ({pipeline.vision_reasoner.model_name})")
+    logger.info(f"TTS Provider:        {pipeline.tts_provider.name}")
+    logger.info(f"Knowledge Retriever: {pipeline.knowledge_retriever.name if pipeline.knowledge_retriever else 'none'}")
+    logger.info(f"Frame Mode:          {settings.frame_mode} (Buffer: {settings.temporal_buffer_seconds}s @ {settings.temporal_fps} FPS, Max: {settings.temporal_max_frames} frames)")
 
-    # Automatically launch SafetyCopilot background vision worker
-    try:
-        copilot_bridge.start_background_copilot(source=0)
-    except Exception as e:
-        logger.warning(f"Could not start background SafetyCopilot: {e}")
+    # If SafetyCopilot is not already running (e.g. if started via uvicorn directly), start background worker
+    if not copilot_bridge._running:
+        try:
+            copilot_bridge.start_background_copilot(source=0)
+        except Exception as e:
+            logger.warning(f"Could not start background SafetyCopilot: {e}")
 
     yield
 
@@ -47,7 +49,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Kaya - Safety Copilot & Voice+Vision Assistant",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan
 )
 
@@ -106,9 +108,15 @@ async def get_pose_data():
 
 @app.get("/api/status")
 async def get_status():
-    """Get system health, provider metadata, copilot metrics, and temporal buffer settings."""
+    """Get system health, provider metadata, copilot metrics, RAG settings, and temporal buffer settings."""
     current_settings = get_settings()
     copilot_info = copilot_bridge.get_status()
+
+    rag_ready = False
+    rag_info = {}
+    if pipeline.knowledge_retriever:
+        rag_ready = await pipeline.knowledge_retriever.is_ready()
+        rag_info = await pipeline.knowledge_retriever.get_store_info()
 
     return {
         "status": "ready",
@@ -116,8 +124,19 @@ async def get_status():
             "stt": pipeline.stt_provider.name,
             "vision": f"{pipeline.vision_reasoner.name}:{pipeline.vision_reasoner.model_name}",
             "tts": pipeline.tts_provider.name,
+            "rag": pipeline.knowledge_retriever.name if pipeline.knowledge_retriever else "none",
         },
         "copilot": copilot_info,
+        "rag": {
+            "enabled": current_settings.rag_enabled,
+            "ready": rag_ready,
+            "provider": pipeline.knowledge_retriever.name if pipeline.knowledge_retriever else "none",
+            "router_mode": current_settings.rag_router_mode,
+            "store_name": pipeline.knowledge_retriever.get_file_search_store_name() if pipeline.knowledge_retriever else None,
+            "document_count": rag_info.get("document_count", 0),
+            "documents": rag_info.get("documents", []),
+            "message": rag_info.get("message", "RAG is not active."),
+        },
         "config": {
             "gemini_configured": bool(current_settings.gemini_api_key and not current_settings.gemini_api_key.startswith("your_")),
             "sarvam_configured": bool(current_settings.sarvam_api_key and not current_settings.sarvam_api_key.startswith("your_")),
@@ -125,6 +144,7 @@ async def get_status():
             "vision_provider": current_settings.vision_provider,
             "stt_provider": current_settings.stt_provider,
             "tts_provider": current_settings.tts_provider,
+            "rag_provider": current_settings.rag_provider,
             "gemini_model": current_settings.gemini_model,
             "nvidia_model": current_settings.nvidia_model,
             "frame_mode": current_settings.frame_mode,
@@ -133,6 +153,31 @@ async def get_status():
             "temporal_max_frames": current_settings.temporal_max_frames,
         },
         "history_turns": len(pipeline.get_history()) // 2
+    }
+
+
+@app.get("/api/knowledge/status")
+async def get_knowledge_status():
+    """Get detailed knowledge base and indexed document information."""
+    if not pipeline.knowledge_retriever:
+        return {
+            "enabled": False,
+            "ready": False,
+            "message": "Knowledge retrieval layer is disabled in settings.",
+            "documents": [],
+            "document_count": 0,
+        }
+
+    ready = await pipeline.knowledge_retriever.is_ready()
+    info = await pipeline.knowledge_retriever.get_store_info()
+    return {
+        "enabled": True,
+        "ready": ready,
+        "provider": pipeline.knowledge_retriever.name,
+        "store_name": pipeline.knowledge_retriever.get_file_search_store_name(),
+        "document_count": info.get("document_count", 0),
+        "documents": info.get("documents", []),
+        "message": info.get("message", ""),
     }
 
 

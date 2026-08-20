@@ -1,580 +1,86 @@
 /**
- * Kaya — Job Site Safety Copilot
- * app.js (ES Module)
- *
- * Depth tab  : Browser-side WebGPU depth inference via @huggingface/transformers,
- *              mirroring v.fast depth architecture exactly (LUT preprocessing,
- *              analytical TURBO colormap, EMA temporal smoothing).
- * Pose tab   : Three.js real-time 3D skeleton viewer, keypoints depth-lifted
- *              to 3D space using the /api/pose JSON endpoint.
- * Voice/Chat : Push-to-Talk MediaRecorder, text query, chip suggestions,
- *              latency pills, TTS autoplay.
+ * Kaya — Job Site Safety Copilot & Voice+Vision+RAG Assistant
+ * Frontend Controller: Real-time Multi-mode Video Stream, 3D Pose Mesh, Depth Colormap & RAG Chatbot
  */
 
-// ── DOM refs ──────────────────────────────────────────────────────
+// ── DOM References ────────────────────────────────────────────────
 
-const videoFeed           = document.getElementById('videoFeed');
-const depthCanvas         = document.getElementById('depthCanvas');
-const poseCanvas          = document.getElementById('poseCanvas');
-const depthLoadingOverlay = document.getElementById('depthLoadingOverlay');
-const depthLoadMsg        = document.getElementById('depthLoadMsg');
-const depthProgressBar    = document.getElementById('depthProgressBar');
-const depthStatsTag       = document.getElementById('telDepthStats');
-const viewModeNav         = document.getElementById('viewModeNav');
-const frameModeToggle     = document.getElementById('frameModeToggle');
-const btnReset            = document.getElementById('btnReset');
-const btnReconnect        = document.getElementById('btnReconnect');
-const engineInfo          = document.getElementById('engineInfo');
+const videoFeed          = document.getElementById('videoFeed');
+const poseCanvas         = document.getElementById('poseCanvas');
+const poseControls       = document.getElementById('poseControls');
+const btnPoseStream      = document.getElementById('btnPoseStream');
+const btnPose3D          = document.getElementById('btnPose3D');
 
-const telObjects  = document.getElementById('telObjects');
-const telHazards  = document.getElementById('telHazards');
-const telFps      = document.getElementById('telFps');
-const pillVisionLabel = document.getElementById('pillVisionLabel');
-const pillSTTLabel    = document.getElementById('pillSTTLabel');
-const pillTTSLabel    = document.getElementById('pillTTSLabel');
-const msgCount        = document.getElementById('msgCount');
+const telObjects         = document.getElementById('telObjects');
+const telHazards         = document.getElementById('telHazards');
+const telFps             = document.getElementById('telFps');
+const telDepthStats      = document.getElementById('telDepthStats');
+const btnReconnect       = document.getElementById('btnReconnect');
 
-const hudListening = document.getElementById('hudListening');
-const hudThinking  = document.getElementById('hudThinking');
-const hudSpeaking  = document.getElementById('hudSpeaking');
+const btnModeTemporal    = document.getElementById('btnModeTemporal');
+const btnModeSingle      = document.getElementById('btnModeSingle');
+const pillVisionLabel    = document.getElementById('pillVisionLabel');
+const pillSTTLabel       = document.getElementById('pillSTTLabel');
+const pillTTSLabel       = document.getElementById('pillTTSLabel');
+const pillRAGLabel       = document.getElementById('pillRAGLabel');
+const btnReset           = document.getElementById('btnReset');
 
-const convFeed    = document.getElementById('convFeed');
-const welcomeCard = document.getElementById('welcomeCard');
-const textForm    = document.getElementById('textForm');
-const textInput   = document.getElementById('textInput');
-const btnSend     = document.getElementById('btnSend');
-const btnPTT      = document.getElementById('btnPTT');
-const pttLabel    = document.getElementById('pttLabel');
-const toastContainer = document.getElementById('toastContainer');
+const convFeed           = document.getElementById('convFeed');
+const welcomeCard        = document.getElementById('welcomeCard');
+const msgCount           = document.getElementById('msgCount');
+
+const btnPTT             = document.getElementById('btnPTT');
+const pttLabel           = document.getElementById('pttLabel');
+const textForm           = document.getElementById('textForm');
+const textInput          = document.getElementById('textInput');
+const btnSend            = document.getElementById('btnSend');
+
+const hudListening       = document.getElementById('hudListening');
+const hudThinking        = document.getElementById('hudThinking');
+const hudSpeaking        = document.getElementById('hudSpeaking');
+const toastContainer     = document.getElementById('toastContainer');
 
 // ── State ─────────────────────────────────────────────────────────
 
-let currentMode = 'all';
-let frameMode   = 'TEMPORAL_FRAMES';
-let msgTotal    = 0;
-let isRecording = false;
-let isProcessing = false;
+let activeViewMode  = 'all';
+let poseSubMode     = 'stream'; // 'stream' or '3d'
+let frameMode       = 'TEMPORAL_FRAMES';
+let msgTotal        = 0;
+let isRecording     = false;
+let isProcessing    = false;
+let mediaRecorder   = null;
+let audioChunks     = [];
+let audioStream     = null;
 
-let mediaRecorder = null;
-let audioChunks   = [];
-let audioStream   = null;
+// Three.js 3D Pose State
+let threeScene      = null;
+let threeCamera     = null;
+let threeRenderer   = null;
+let threeControls   = null;
+let poseLoopId      = null;
+let poseMeshGroup   = null;
+let noPoseTextMesh  = null;
 
-// ════════════════════════════════════════════════════════════════════
-//  DEPTH TAB — Browser-side WebGPU inference (v.fast depth exact port)
-// ════════════════════════════════════════════════════════════════════
-
-let depthPipelineReady = false;
-let depthPipelineLoading = false;
-let depthInferencing = false;
-
-// EMA state (mirrors GPUDepthRenderer smoothedMin/smoothedMax)
-let dSmoothedMin = 0;
-let dSmoothedMax = 1;
-let dHasRange = false;
-
-// Offscreen canvas for frame capture from MJPEG img element
-let depthOffscreen = null;
-let depthOffCtx = null;
-
-// Depth model reference
-let depthModel = null;
-
-// Persistent pre-allocated buffer + LUTs (mirrors DepthPipeline constructor)
-const DEPTH_RES = 336;
-let persistentPixelBuffer = null;
-let lutR = null, lutG = null, lutB = null;
-
-function buildDepthLUTs() {
-  lutR = new Float32Array(256);
-  lutG = new Float32Array(256);
-  lutB = new Float32Array(256);
-  const inv255 = 1 / 255;
-  const meanR = 0.485, meanG = 0.456, meanB = 0.406;
-  const invStdR = 1 / 0.229, invStdG = 1 / 0.224, invStdB = 1 / 0.225;
-  for (let i = 0; i < 256; i++) {
-    lutR[i] = (i * inv255 - meanR) * invStdR;
-    lutG[i] = (i * inv255 - meanG) * invStdG;
-    lutB[i] = (i * inv255 - meanB) * invStdB;
-  }
-  persistentPixelBuffer = new Float32Array(3 * DEPTH_RES * DEPTH_RES);
-}
-
-async function initDepthPipeline() {
-  if (depthPipelineReady || depthPipelineLoading) return;
-  depthPipelineLoading = true;
-
-  depthLoadingOverlay.classList.remove('hidden');
-  depthLoadMsg.textContent = 'Initializing WebGPU Depth Pipeline...';
-  depthProgressBar.style.width = '0%';
-
-  buildDepthLUTs();
-
-  depthOffscreen = document.createElement('canvas');
-  depthOffscreen.width = DEPTH_RES;
-  depthOffscreen.height = DEPTH_RES;
-  depthOffCtx = depthOffscreen.getContext('2d', { willReadFrequently: true });
-
-  try {
-    const { AutoModelForDepthEstimation, env } = await import('@huggingface/transformers');
-    env.allowLocalModels = false;
-    env.useBrowserCache = true;
-
-    const MODEL_NAME = 'onnx-community/depth-anything-v2-small';
-    depthLoadMsg.textContent = `Loading ${MODEL_NAME} (WebGPU FP16)…`;
-
-    depthModel = await AutoModelForDepthEstimation.from_pretrained(MODEL_NAME, {
-      device: 'webgpu',
-      dtype: 'fp16',
-      progress_callback: (p) => {
-        if (p.status === 'progress' && p.progress != null) {
-          const pct = Math.round(p.progress);
-          depthProgressBar.style.width = pct + '%';
-          depthLoadMsg.textContent = `Downloading model: ${pct}%`;
-        } else if (p.status === 'initiate') {
-          depthLoadMsg.textContent = `Fetching: ${p.file || ''}…`;
-        }
-      },
-    });
-
-    // Warmup passes (mirrors DepthPipeline.warmup())
-    depthLoadMsg.textContent = 'Warming up GPU…';
-    persistentPixelBuffer.fill(0);
-    const { Tensor } = await import('@huggingface/transformers');
-    const dummyTensor = new Tensor('float32', persistentPixelBuffer, [1, 3, DEPTH_RES, DEPTH_RES]);
-    for (let i = 0; i < 3; i++) {
-      await depthModel({ pixel_values: dummyTensor });
-    }
-
-    depthPipelineReady = true;
-    depthLoadingOverlay.classList.add('hidden');
-    depthProgressBar.style.width = '100%';
-    engineInfo.textContent = `YOLO11 · YOLO-World · Depth Anything V2 (WebGPU FP16) · YOLO-Pose`;
-    depthStatsTag.classList.remove('hidden');
-    toast('WebGPU depth pipeline ready', 'success');
-    startDepthLoop();
-
-  } catch (err) {
-    console.error('[Depth] Init error:', err);
-    depthLoadMsg.textContent = `Error: ${err.message}`;
-    toast('WebGPU depth failed — falling back to server stream', 'error');
-    // Fall back: show server-side MJPEG depth stream
-    depthLoadingOverlay.classList.add('hidden');
-    depthCanvas.classList.add('hidden');
-    videoFeed.src = `/api/video_feed?mode=depth&t=${Date.now()}`;
-    videoFeed.classList.remove('hidden');
-    depthPipelineLoading = false;
-  }
-}
-
-async function runDepthInference() {
-  if (!depthPipelineReady || depthInferencing) return;
-  if (currentMode !== 'depth') return;
-  depthInferencing = true;
-
-  try {
-    const { Tensor } = await import('@huggingface/transformers');
-
-    // ── 1. Capture current frame from raw MJPEG img into offscreen canvas ──
-    const t0 = performance.now();
-    depthOffCtx.drawImage(videoFeed, 0, 0, DEPTH_RES, DEPTH_RES);
-    const imgData = depthOffCtx.getImageData(0, 0, DEPTH_RES, DEPTH_RES).data;
-
-    // ── 2. LUT preprocessing — planar RGB, ImageNet norm (mirrors DepthPipeline) ──
-    const N = DEPTH_RES * DEPTH_RES;
-    for (let i = 0, j = 0; i < N; i++, j += 4) {
-      persistentPixelBuffer[i]       = lutR[imgData[j]];
-      persistentPixelBuffer[N + i]   = lutG[imgData[j + 1]];
-      persistentPixelBuffer[N*2 + i] = lutB[imgData[j + 2]];
-    }
-    const preprocessMs = performance.now() - t0;
-
-    // ── 3. WebGPU inference ──
-    const t2 = performance.now();
-    const inputTensor = new Tensor('float32', persistentPixelBuffer, [1, 3, DEPTH_RES, DEPTH_RES]);
-    const output = await depthModel({ pixel_values: inputTensor });
-    const inferenceMs = performance.now() - t2;
-
-    // ── 4. Extract depth array ──
-    const rawTensor = output.predicted_depth || output.depth || output[Object.keys(output)[0]];
-    let depthData;
-    let outW = DEPTH_RES, outH = DEPTH_RES;
-    if (rawTensor && rawTensor.data) {
-      depthData = rawTensor.data instanceof Float32Array ? rawTensor.data : new Float32Array(rawTensor.data);
-      if (rawTensor.dims && rawTensor.dims.length >= 2) {
-        outW = rawTensor.dims[rawTensor.dims.length - 1];
-        outH = rawTensor.dims[rawTensor.dims.length - 2];
-      }
-    } else {
-      depthData = new Float32Array(N);
-    }
-
-    // ── 5. Render to canvas ──
-    const t4 = performance.now();
-    renderDepthToCanvas(depthData, outW, outH);
-    const renderMs = performance.now() - t4;
-
-    const totalMs = performance.now() - t0;
-    depthStatsTag.textContent = `WebGPU ${(1000/totalMs).toFixed(1)} FPS | inf ${inferenceMs.toFixed(0)}ms`;
-
-  } catch (err) {
-    console.error('[Depth] Inference error:', err);
-  } finally {
-    depthInferencing = false;
-  }
-}
-
-/**
- * Render Float32 depth data to the depth canvas using the analytical TURBO
- * colormap polynomial — exact port of WGSL colormapTurbo() from gpu-renderer.ts.
- * EMA temporal smoothing matches GPUDepthRenderer (85% history, 15% current).
- */
-function renderDepthToCanvas(depthData, w, h) {
-  const canvas = depthCanvas;
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w;
-    canvas.height = h;
-  }
-
-  const ctx = canvas.getContext('2d');
-  const imageData = ctx.createImageData(w, h);
-  const pixels = imageData.data;
-  const n = depthData.length;
-
-  // ── Adaptive range: 64-sample strided scan (mirrors GPU renderer) ──
-  const step = Math.max(1, Math.floor(n / 64));
-  let curMin = Infinity, curMax = -Infinity;
-  for (let i = 0; i < n; i += step) {
-    const v = depthData[i];
-    if (v < curMin) curMin = v;
-    if (v > curMax) curMax = v;
-  }
-  if (!isFinite(curMin)) curMin = 0;
-  if (!isFinite(curMax) || curMax <= curMin) curMax = curMin + 1;
-
-  // ── EMA smoothing: 85% history + 15% current (matches GPUDepthRenderer) ──
-  if (!dHasRange) {
-    dSmoothedMin = curMin; dSmoothedMax = curMax; dHasRange = true;
-  } else {
-    dSmoothedMin = dSmoothedMin * 0.85 + curMin * 0.15;
-    dSmoothedMax = dSmoothedMax * 0.85 + curMax * 0.15;
-  }
-
-  const dRange = dSmoothedMax - dSmoothedMin || 1;
-
-  // ── Analytical TURBO colormap polynomial (exact match to WGSL shader) ──
-  for (let i = 0; i < n; i++) {
-    const x = Math.min(1, Math.max(0, (depthData[i] - dSmoothedMin) / dRange));
-    const x2 = x*x, x3 = x2*x, x4 = x3*x, x5 = x4*x;
-
-    const r = Math.min(1, Math.max(0, 0.13572138 + 4.61539260*x - 42.66032258*x2 + 132.13108234*x3 - 152.94239396*x4 + 59.28637943*x5));
-    const g = Math.min(1, Math.max(0, 0.09140261 + 2.19418839*x +  4.84296658*x2 -  14.18503333*x3 +   4.27729857*x4 +  2.82956604*x5));
-    const b = Math.min(1, Math.max(0, 0.10667447 +12.64194608*x - 60.58204836*x2 + 110.36276771*x3 -  89.90310912*x4 + 27.34824973*x5));
-
-    const off = i * 4;
-    pixels[off]   = r * 255;
-    pixels[off+1] = g * 255;
-    pixels[off+2] = b * 255;
-    pixels[off+3] = 255;
-  }
-
-  ctx.putImageData(imageData, 0, 0);
-
-  // ── Scale bar ──
-  const barX = w - 20, barH = h - 40;
-  for (let y = 0; y < barH; y++) {
-    const t = y / barH;
-    const t2 = t*t, t3 = t2*t, t4 = t3*t, t5 = t4*t;
-    const br = Math.min(1,Math.max(0, 0.13572138 + 4.61539260*t - 42.66032258*t2 + 132.13108234*t3 - 152.94239396*t4 + 59.28637943*t5));
-    const bg = Math.min(1,Math.max(0, 0.09140261 + 2.19418839*t +  4.84296658*t2 -  14.18503333*t3 +   4.27729857*t4 +  2.82956604*t5));
-    const bb = Math.min(1,Math.max(0, 0.10667447 +12.64194608*t - 60.58204836*t2 + 110.36276771*t3 -  89.90310912*t4 + 27.34824973*t5));
-    ctx.fillStyle = `rgb(${(br*255)|0},${(bg*255)|0},${(bb*255)|0})`;
-    ctx.fillRect(barX, 20 + y, 10, 1);
-  }
-  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-  ctx.strokeRect(barX - 1, 19, 12, barH + 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  ctx.font = '9px monospace';
-  ctx.fillText(`${dSmoothedMin.toFixed(1)}`, barX - 24, 24);
-  ctx.fillText(`${dSmoothedMax.toFixed(1)}`, barX - 24, 20 + barH);
-}
-
-function startDepthLoop() {
-  const loop = () => {
-    if (currentMode === 'depth') runDepthInference();
-    requestAnimationFrame(loop);
-  };
-  requestAnimationFrame(loop);
-}
-
-// ════════════════════════════════════════════════════════════════════
-//  POSE TAB — Three.js real-time 3D skeleton viewer
-// ════════════════════════════════════════════════════════════════════
-
-let threeRenderer = null;
-let threeScene    = null;
-let threeCamera   = null;
-let poseActive    = false;
-let poseObjects   = [];  // { boneLine, joint }
-
-// COCO skeleton connections [kp_a, kp_b, color_hex]
-const SKELETON = [
-  [0,1,'#a78bfa'], [0,2,'#a78bfa'],          // nose-eyes
-  [1,3,'#7c3aed'], [2,4,'#7c3aed'],          // eyes-ears
-  [5,6,'#22d3ee'],                            // shoulders
-  [5,7,'#3b82f6'], [7,9,'#3b82f6'],          // left arm
-  [6,8,'#f97316'], [8,10,'#f97316'],         // right arm
-  [5,11,'#22c55e'], [6,12,'#22c55e'],        // torso sides
-  [11,12,'#22d3ee'],                          // hips
-  [11,13,'#3b82f6'], [13,15,'#3b82f6'],      // left leg
-  [12,14,'#f97316'], [14,16,'#f97316'],      // right leg
+// ── 17 COCO Skeleton Bones Pairs ──────────────────────────────────
+const SKELETON_BONES = [
+  [0, 1], [0, 2],         // Nose to eyes
+  [1, 3], [2, 4],         // Eyes to ears
+  [5, 6],                 // Shoulder to shoulder
+  [5, 7], [7, 9],         // Left arm
+  [6, 8], [8, 10],        // Right arm
+  [5, 11], [6, 12],       // Left / right torso
+  [11, 12],               // Hip to hip
+  [11, 13], [13, 15],     // Left leg
+  [12, 14], [14, 16]      // Right leg
 ];
 
-function initThreePose() {
-  if (threeRenderer) return;
+// ── HUD Overlays ──────────────────────────────────────────────────
 
-  const canvas = poseCanvas;
-  const W = canvas.parentElement.clientWidth  || 640;
-  const H = canvas.parentElement.clientHeight || 480;
-  canvas.width  = W;
-  canvas.height = H;
-
-  threeRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-  threeRenderer.setPixelRatio(window.devicePixelRatio);
-  threeRenderer.setSize(W, H);
-  threeRenderer.setClearColor(0x0a0a1a, 1);
-
-  threeScene = new THREE.Scene();
-
-  // Perspective camera
-  threeCamera = new THREE.PerspectiveCamera(60, W / H, 0.1, 100);
-  threeCamera.position.set(0, 0, 5);
-  threeCamera.lookAt(0, 0, 0);
-
-  // Subtle ambient + point lights
-  threeScene.add(new THREE.AmbientLight(0x222244, 1));
-  const pt = new THREE.PointLight(0x6366f1, 2, 20);
-  pt.position.set(2, 3, 4);
-  threeScene.add(pt);
-
-  // Grid floor
-  const grid = new THREE.GridHelper(10, 20, 0x1e1e3a, 0x1e1e3a);
-  grid.position.y = -2;
-  threeScene.add(grid);
-
-  // Slow orbit animation
-  let angle = 0;
-  const animate = () => {
-    requestAnimationFrame(animate);
-    if (currentMode !== 'pose') return;
-    angle += 0.004;
-    threeCamera.position.x = Math.sin(angle) * 5;
-    threeCamera.position.z = Math.cos(angle) * 5;
-    threeCamera.lookAt(0, 0, 0);
-    threeRenderer.render(threeScene, threeCamera);
-  };
-  animate();
-}
-
-function clearPoseMeshes() {
-  poseObjects.forEach(o => {
-    threeScene.remove(o);
-    o.geometry && o.geometry.dispose();
-    o.material && o.material.dispose();
-  });
-  poseObjects = [];
-}
-
-function updatePose3D(poseData) {
-  if (!threeScene) return;
-  clearPoseMeshes();
-
-  const FW = poseData.frame_width  || 1280;
-  const FH = poseData.frame_height || 720;
-
-  // Convert 2D pixel + depth → 3D coords
-  // Normalize: x ∈ [-2.5, 2.5], y ∈ [-1.5, 1.5] (inverted), z from depth
-  function toVec3(kp) {
-    if (!kp || kp.conf < 0.2) return null;
-    const x = ((kp.x / FW) - 0.5) * 5.0;
-    const y = -((kp.y / FH) - 0.5) * 3.0;
-    const z = kp.depth ? -(kp.depth * 0.5) : 0;  // depth-lifted Z
-    return new THREE.Vector3(x, y, z);
-  }
-
-  for (const person of poseData.poses) {
-    const kps = person.keypoints;
-    if (!kps || kps.length < 17) continue;
-
-    // ── Joints (spheres) ──
-    for (const kp of kps) {
-      if (kp.conf < 0.2) continue;
-      const pos = toVec3(kp);
-      if (!pos) continue;
-      const geo = new THREE.SphereGeometry(0.045, 8, 8);
-      const mat = new THREE.MeshPhongMaterial({ color: 0xffffff, emissive: 0x6366f1, emissiveIntensity: 0.8 });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.copy(pos);
-      threeScene.add(mesh);
-      poseObjects.push(mesh);
-    }
-
-    // ── Bones (lines) ──
-    for (const [a, b, colorHex] of SKELETON) {
-      const pA = toVec3(kps[a]);
-      const pB = toVec3(kps[b]);
-      if (!pA || !pB) continue;
-
-      const points = [pA, pB];
-      const geo = new THREE.BufferGeometry().setFromPoints(points);
-      const mat = new THREE.LineBasicMaterial({ color: colorHex, linewidth: 2 });
-      const line = new THREE.Line(geo, mat);
-      threeScene.add(line);
-      poseObjects.push(line);
-    }
-
-    // ── Gaze ray ──
-    if (person.head_yaw != null && kps[0] && kps[0].conf >= 0.2) {
-      const nose = toVec3(kps[0]);
-      if (nose) {
-        const yawRad = (person.head_yaw * Math.PI) / 180;
-        const dir = new THREE.Vector3(Math.cos(yawRad) * 1.2, 0, Math.sin(yawRad) * 0.5);
-        const end = nose.clone().add(dir);
-        const geo = new THREE.BufferGeometry().setFromPoints([nose, end]);
-        const mat = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 });
-        const line = new THREE.Line(geo, mat);
-        threeScene.add(line);
-        poseObjects.push(line);
-      }
-    }
-  }
-
-  // Empty state label
-  if (poseData.poses.length === 0) {
-    // Keep scene empty — grid still shows
-  }
-}
-
-async function pollPoseData() {
-  if (currentMode !== 'pose') return;
-  try {
-    const res = await fetch('/api/pose');
-    if (res.ok) {
-      const data = await res.json();
-      updatePose3D(data);
-    }
-  } catch (_) {}
-}
-
-// ── View mode switching ───────────────────────────────────────────
-
-function setActiveViewElement(mode) {
-  // Hide all
-  videoFeed.classList.add('hidden');
-  depthCanvas.classList.add('hidden');
-  poseCanvas.classList.add('hidden');
-
-  if (mode === 'depth') {
-    depthCanvas.classList.remove('hidden');
-    // Also pipe raw video to the offscreen for depth inference capture
-    videoFeed.src = `/api/video_feed?mode=raw&t=${Date.now()}`;
-  } else if (mode === 'pose') {
-    poseCanvas.classList.remove('hidden');
-  } else {
-    videoFeed.classList.remove('hidden');
-  }
-}
-
-viewModeNav.addEventListener('click', e => {
-  const tab = e.target.closest('.view-tab');
-  if (!tab) return;
-  const mode = tab.dataset.mode;
-  if (mode === currentMode) return;
-
-  document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
-  tab.classList.add('active');
-  currentMode = mode;
-
-  setActiveViewElement(mode);
-
-  if (mode === 'depth') {
-    depthStatsTag.classList.remove('hidden');
-    if (!depthPipelineReady && !depthPipelineLoading) {
-      initDepthPipeline();
-    } else if (depthPipelineReady) {
-      depthLoadingOverlay.classList.add('hidden');
-    }
-  } else {
-    depthStatsTag.classList.add('hidden');
-    depthLoadingOverlay.classList.add('hidden');
-    if (mode !== 'pose') {
-      videoFeed.src = `/api/video_feed?mode=${mode}&t=${Date.now()}`;
-    }
-  }
-
-  if (mode === 'pose') {
-    initThreePose();
-    pollPoseData();
-  }
-});
-
-// Poll pose data at 15fps while in pose mode
-setInterval(() => { if (currentMode === 'pose') pollPoseData(); }, 66);
-
-btnReconnect.addEventListener('click', () => {
-  if (currentMode !== 'depth' && currentMode !== 'pose') {
-    videoFeed.src = `/api/video_feed?mode=${currentMode}&t=${Date.now()}`;
-  }
-  toast('Reconnected');
-});
-
-videoFeed.addEventListener('error', () => {
-  if (currentMode !== 'depth' && currentMode !== 'pose') {
-    setTimeout(() => { videoFeed.src = `/api/video_feed?mode=${currentMode}&t=${Date.now()}`; }, 2000);
-  }
-});
-
-// ── Frame mode toggle ─────────────────────────────────────────────
-
-frameModeToggle.addEventListener('click', e => {
-  const btn = e.target.closest('.mode-tab-btn');
-  if (!btn) return;
-  document.querySelectorAll('.mode-tab-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  frameMode = btn.id === 'btnModeTemporal' ? 'TEMPORAL_FRAMES' : 'SINGLE_FRAME';
-});
-
-// ── Status polling ────────────────────────────────────────────────
-
-async function pollStatus() {
-  try {
-    const res = await fetch('/api/status');
-    if (!res.ok) return;
-    const d = await res.json();
-    const c = d.copilot || {};
-    const p = d.providers || {};
-    telObjects.textContent = `${c.tracked_count ?? 0} objects`;
-    telHazards.textContent = `${c.hazard_count  ?? c.hazards_count ?? 0} hazards`;
-    telFps.textContent     = `${Number(c.fps ?? 0).toFixed(1)} fps`;
-    if (p.vision) pillVisionLabel.textContent = `Vision: ${p.vision.split(':')[0]}`;
-    if (p.stt)    pillSTTLabel.textContent    = `STT: ${p.stt}`;
-    if (p.tts)    pillTTSLabel.textContent    = `TTS: ${p.tts}`;
-    const turns = d.history_turns ?? 0;
-    msgCount.textContent = `${turns} message${turns !== 1 ? 's' : ''}`;
-  } catch (_) {}
-}
-
-pollStatus();
-setInterval(pollStatus, 2000);
-
-// ── HUD helpers ───────────────────────────────────────────────────
-
-function showHUD(state) {
-  hudListening.classList.add('hidden');
-  hudThinking.classList.add('hidden');
-  hudSpeaking.classList.add('hidden');
-  if (state === 'listening') hudListening.classList.remove('hidden');
-  if (state === 'thinking')  hudThinking.classList.remove('hidden');
-  if (state === 'speaking')  hudSpeaking.classList.remove('hidden');
+function showHUD(type) {
+  hideHUD();
+  if (type === 'listening') hudListening.classList.remove('hidden');
+  else if (type === 'thinking') hudThinking.classList.remove('hidden');
+  else if (type === 'speaking') hudSpeaking.classList.remove('hidden');
 }
 
 function hideHUD() {
@@ -583,27 +89,292 @@ function hideHUD() {
   hudSpeaking.classList.add('hidden');
 }
 
-// ── Push-to-Talk ──────────────────────────────────────────────────
+// ── Telemetry & Provider Status ───────────────────────────────────
 
-function mimeType() {
-  for (const t of ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']) {
+async function pollStatus() {
+  try {
+    const res = await fetch('/api/status');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    // Providers
+    if (data.providers) {
+      if (data.providers.vision) pillVisionLabel.textContent = `Vision: ${data.providers.vision.split(':')[0]}`;
+      if (data.providers.stt) pillSTTLabel.textContent = `STT: ${data.providers.stt.split('/')[0]}`;
+      if (data.providers.tts) pillTTSLabel.textContent = `TTS: ${data.providers.tts.split('/')[0]}`;
+      if (data.providers.rag) pillRAGLabel.textContent = `RAG: ${data.providers.rag.split('_')[0]}`;
+    }
+
+    // Copilot CV telemetry
+    if (data.copilot) {
+      telObjects.textContent = `${data.copilot.tracked_count || 0} objects`;
+      telHazards.textContent = `${data.copilot.hazards_count || 0} hazards`;
+      if (data.copilot.fps != null) telFps.textContent = `${Math.round(data.copilot.fps)} fps`;
+    }
+  } catch (err) {
+    console.debug('Status poll error:', err);
+  }
+}
+
+setInterval(pollStatus, 2500);
+pollStatus();
+
+// ── View Mode Switching ───────────────────────────────────────────
+
+function updateViewDisplay() {
+  stopPoseLoop();
+  poseControls.classList.add('hidden');
+
+  if (activeViewMode === 'pose') {
+    poseControls.classList.remove('hidden');
+    if (poseSubMode === '3d') {
+      videoFeed.classList.add('hidden');
+      poseCanvas.classList.remove('hidden');
+      startPoseLoop();
+      return;
+    } else {
+      poseCanvas.classList.add('hidden');
+      videoFeed.classList.remove('hidden');
+      videoFeed.src = `/api/video_feed?mode=pose&t=${Date.now()}`;
+      return;
+    }
+  }
+
+  // All standard stream modes: 'all', 'raw', 'depth', 'ppe', 'objects'
+  poseCanvas.classList.add('hidden');
+  videoFeed.classList.remove('hidden');
+  videoFeed.src = `/api/video_feed?mode=${activeViewMode}&t=${Date.now()}`;
+}
+
+document.querySelectorAll('.view-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.view-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeViewMode = btn.dataset.mode;
+    updateViewDisplay();
+  });
+});
+
+btnPoseStream.addEventListener('click', () => {
+  poseSubMode = 'stream';
+  btnPoseStream.classList.add('active');
+  btnPose3D.classList.remove('active');
+  updateViewDisplay();
+});
+
+btnPose3D.addEventListener('click', () => {
+  poseSubMode = '3d';
+  btnPose3D.classList.add('active');
+  btnPoseStream.classList.remove('active');
+  updateViewDisplay();
+});
+
+btnReconnect.addEventListener('click', () => {
+  videoFeed.src = `/api/video_feed?mode=${activeViewMode}&t=${Date.now()}`;
+  toast('Reconnected video stream');
+});
+
+// ── Three.js 3D Interactive Pose Viewer ───────────────────────────
+
+function initThreeJS() {
+  if (threeRenderer) return;
+
+  const container = poseCanvas.parentElement;
+  const w = container.clientWidth || 640;
+  const h = container.clientHeight || 480;
+
+  threeScene = new THREE.Scene();
+  threeScene.background = new THREE.Color(0x0a0f1d);
+
+  threeCamera = new THREE.PerspectiveCamera(45, w / h, 0.1, 100);
+  threeCamera.position.set(0, 0, 3.8);
+
+  threeRenderer = new THREE.WebGLRenderer({ canvas: poseCanvas, antialias: true });
+  threeRenderer.setSize(w, h);
+  threeRenderer.setPixelRatio(window.devicePixelRatio || 1);
+
+  if (typeof THREE.OrbitControls !== 'undefined') {
+    threeControls = new THREE.OrbitControls(threeCamera, poseCanvas);
+    threeControls.enableDamping = true;
+    threeControls.dampingFactor = 0.05;
+  }
+
+  // Lighting
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+  threeScene.add(ambientLight);
+
+  const dirLight = new THREE.DirectionalLight(0x6366f1, 1.2);
+  dirLight.position.set(2, 4, 3);
+  threeScene.add(dirLight);
+
+  // 3D Spatial Grid Floor
+  const grid = new THREE.GridHelper(8, 16, 0x4f46e5, 0x1e293b);
+  grid.position.y = -1.6;
+  threeScene.add(grid);
+
+  poseMeshGroup = new THREE.Group();
+  threeScene.add(poseMeshGroup);
+
+  window.addEventListener('resize', () => {
+    if (activeViewMode === 'pose' && poseSubMode === '3d' && threeRenderer) {
+      const nw = container.clientWidth || 640;
+      const nh = container.clientHeight || 480;
+      threeCamera.aspect = nw / nh;
+      threeCamera.updateProjectionMatrix();
+      threeRenderer.setSize(nw, nh);
+    }
+  });
+}
+
+async function startPoseLoop() {
+  initThreeJS();
+  let isRunning = true;
+
+  const animate = async () => {
+    if (!isRunning || activeViewMode !== 'pose' || poseSubMode !== '3d') return;
+
+    try {
+      const res = await fetch('/api/pose');
+      if (res.ok) {
+        const data = await res.json();
+        render3DPoseData(data);
+      }
+    } catch (err) {
+      console.debug('Pose polling error:', err);
+    }
+
+    if (threeControls) threeControls.update();
+    threeRenderer.render(threeScene, threeCamera);
+    poseLoopId = requestAnimationFrame(animate);
+  };
+
+  poseLoopId = requestAnimationFrame(animate);
+}
+
+function stopPoseLoop() {
+  if (poseLoopId) {
+    cancelAnimationFrame(poseLoopId);
+    poseLoopId = null;
+  }
+}
+
+function render3DPoseData(data) {
+  // Clear previous frame meshes
+  while (poseMeshGroup.children.length > 0) {
+    const obj = poseMeshGroup.children[0];
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+      if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+      else obj.material.dispose();
+    }
+    poseMeshGroup.remove(obj);
+  }
+
+  const poses = data.poses || [];
+  const fw = data.frame_width || 1280;
+  const fh = data.frame_height || 720;
+
+  if (poses.length === 0) return;
+
+  const jointGeo = new THREE.SphereGeometry(0.045, 12, 12);
+  const headGeo  = new THREE.SphereGeometry(0.09, 16, 16);
+
+  poses.forEach((pose, pIdx) => {
+    const kps = pose.keypoints || [];
+    if (kps.length < 17) return;
+
+    // Joint positions map
+    const jointVectors = [];
+    kps.forEach((kp, idx) => {
+      // Map pixel coordinates to centered 3D unit space
+      const normX = ((kp.x / fw) - 0.5) * 3.2;
+      const normY = -((kp.y / fh) - 0.5) * 2.4;
+      const normZ = kp.depth ? -(kp.depth - 2.2) * 0.4 : 0.0;
+      const vec = new THREE.Vector3(normX, normY, normZ);
+      jointVectors.push({ vec, conf: kp.conf });
+
+      if (kp.conf > 0.25) {
+        const isHead = idx === 0;
+        const color = kp.conf > 0.6 ? 0x10b981 : 0xf59e0b;
+        const mat = new THREE.MeshStandardMaterial({
+          color,
+          roughness: 0.3,
+          metalness: 0.2,
+          emissive: color,
+          emissiveIntensity: 0.2
+        });
+        const mesh = new THREE.Mesh(isHead ? headGeo : jointGeo, mat);
+        mesh.position.copy(vec);
+        poseMeshGroup.add(mesh);
+      }
+    });
+
+    // Skeletal Bones (Cylinders or Lines)
+    SKELETON_BONES.forEach(([iA, iB]) => {
+      const ptA = jointVectors[iA];
+      const ptB = jointVectors[iB];
+      if (ptA && ptB && ptA.conf > 0.25 && ptB.conf > 0.25) {
+        const boneMat = new THREE.LineBasicMaterial({
+          color: 0x6366f1,
+          linewidth: 3,
+          transparent: true,
+          opacity: 0.85
+        });
+        const boneGeo = new THREE.BufferGeometry().setFromPoints([ptA.vec, ptB.vec]);
+        const line = new THREE.Line(boneGeo, boneMat);
+        poseMeshGroup.add(line);
+      }
+    });
+
+    // Head Gaze Perspective Vector
+    if (jointVectors[0] && jointVectors[0].conf > 0.3 && pose.head_yaw != null) {
+      const yawRad = (pose.head_yaw * Math.PI) / 180;
+      const gazeDir = new THREE.Vector3(Math.cos(yawRad) * 0.4, 0, Math.sin(yawRad) * 0.4);
+      const gazeEnd = jointVectors[0].vec.clone().add(gazeDir);
+      const gazeMat = new THREE.LineBasicMaterial({ color: 0x06b6d4, linewidth: 2 });
+      const gazeGeo = new THREE.BufferGeometry().setFromPoints([jointVectors[0].vec, gazeEnd]);
+      poseMeshGroup.add(new THREE.Line(gazeGeo, gazeMat));
+    }
+  });
+}
+
+// ── Frame Mode Switcher ───────────────────────────────────────────
+
+btnModeTemporal.addEventListener('click', () => {
+  frameMode = 'TEMPORAL_FRAMES';
+  btnModeTemporal.classList.add('active');
+  btnModeSingle.classList.remove('active');
+  toast('Benchmarking Mode: Temporal Sequence (Buffer 6s @ 1 FPS)');
+});
+
+btnModeSingle.addEventListener('click', () => {
+  frameMode = 'SINGLE_FRAME';
+  btnModeSingle.classList.add('active');
+  btnModeTemporal.classList.remove('active');
+  toast('Benchmarking Mode: Single Snapshot Frame');
+});
+
+// ── Push-to-Talk Voice Recording ──────────────────────────────────
+
+function getMimeType() {
+  for (const t of ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']) {
     if (MediaRecorder.isTypeSupported(t)) return t;
   }
   return '';
 }
 
-async function getStream() {
+async function getAudioStream() {
   if (!audioStream || audioStream.getTracks().every(t => t.readyState === 'ended')) {
     audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   }
   return audioStream;
 }
 
-async function startRec() {
+async function startRecording() {
   if (isRecording || isProcessing) return;
   try {
-    const stream = await getStream();
-    const mime = mimeType();
+    const stream = await getAudioStream();
+    const mime = getMimeType();
     mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
     audioChunks = [];
     mediaRecorder.ondataavailable = e => { if (e.data?.size > 0) audioChunks.push(e.data); };
@@ -612,27 +383,27 @@ async function startRec() {
     btnPTT.classList.add('recording');
     pttLabel.textContent = 'Recording — Release to send';
     showHUD('listening');
-  } catch {
-    toast('Microphone access denied', 'error');
+  } catch (err) {
+    toast('Microphone access denied: ' + err.message, 'error');
   }
 }
 
-async function stopRec() {
+async function stopRecording() {
   if (!isRecording || !mediaRecorder) return;
   await new Promise(res => { mediaRecorder.onstop = res; mediaRecorder.stop(); });
   isRecording = false;
 }
 
-async function submitVoice() {
-  await stopRec();
+async function submitVoiceTurn() {
+  await stopRecording();
   btnPTT.classList.remove('recording');
   pttLabel.textContent = 'Push to Talk';
   if (!audioChunks.length) { hideHUD(); return; }
 
-  const mime = mimeType() || 'audio/webm';
+  const mime = getMimeType() || 'audio/webm';
   const blob = new Blob(audioChunks, { type: mime });
   audioChunks = [];
-  const userRow = addMsg('user', '🎙️ Voice query...');
+  const userRow = addMsg('user', '🎙️ Spoken question...');
   isProcessing = true;
   showHUD('thinking');
 
@@ -641,12 +412,16 @@ async function submitVoice() {
     const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm';
     fd.append('audio', blob, `rec.${ext}`);
     fd.append('frame_mode', frameMode);
-    const t0 = Date.now();
+
+    const t0 = performance.now();
     const res = await fetch('/api/ask', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Error ${res.status}`);
     const data = await res.json();
-    if (data.transcript) userRow.querySelector('.bubble').textContent = `🎙️ "${data.transcript}"`;
-    addAssistantMsg(data, Date.now() - t0);
+
+    if (data.transcript) {
+      userRow.querySelector('.bubble').textContent = `🎙️ "${data.transcript}"`;
+    }
+    addAssistantMsg(data, performance.now() - t0);
   } catch (err) {
     toast(err.message, 'error');
     userRow.remove();
@@ -656,22 +431,30 @@ async function submitVoice() {
   }
 }
 
-btnPTT.addEventListener('mousedown', e => { e.preventDefault(); startRec(); });
-btnPTT.addEventListener('mouseup', () => { if (isRecording) submitVoice(); });
-btnPTT.addEventListener('mouseleave', () => { if (isRecording) submitVoice(); });
-btnPTT.addEventListener('touchstart', e => { e.preventDefault(); startRec(); });
-btnPTT.addEventListener('touchend', e => { e.preventDefault(); if (isRecording) submitVoice(); });
+btnPTT.addEventListener('mousedown', e => { e.preventDefault(); startRecording(); });
+btnPTT.addEventListener('mouseup', () => { if (isRecording) submitVoiceTurn(); });
+btnPTT.addEventListener('mouseleave', () => { if (isRecording) submitVoiceTurn(); });
+btnPTT.addEventListener('touchstart', e => { e.preventDefault(); startRecording(); });
+btnPTT.addEventListener('touchend', e => { e.preventDefault(); if (isRecording) submitVoiceTurn(); });
 
 let spaceDown = false;
 document.addEventListener('keydown', e => {
   if (e.target === textInput) return;
-  if (e.code === 'Space' && !spaceDown && !isProcessing) { e.preventDefault(); spaceDown = true; startRec(); }
+  if (e.code === 'Space' && !spaceDown && !isProcessing) {
+    e.preventDefault();
+    spaceDown = true;
+    startRecording();
+  }
 });
 document.addEventListener('keyup', e => {
-  if (e.code === 'Space' && spaceDown) { e.preventDefault(); spaceDown = false; if (isRecording) submitVoice(); }
+  if (e.code === 'Space' && spaceDown) {
+    e.preventDefault();
+    spaceDown = false;
+    if (isRecording) submitVoiceTurn();
+  }
 });
 
-// ── Text submission ───────────────────────────────────────────────
+// ── Text Input Submission ─────────────────────────────────────────
 
 textForm.addEventListener('submit', async e => {
   e.preventDefault();
@@ -682,15 +465,17 @@ textForm.addEventListener('submit', async e => {
   btnSend.disabled = true;
   addMsg('user', q);
   showHUD('thinking');
+
   try {
     const fd = new FormData();
     fd.append('question', q);
     fd.append('frame_mode', frameMode);
-    const t0 = Date.now();
+
+    const t0 = performance.now();
     const res = await fetch('/api/ask-text', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Error ${res.status}`);
     const data = await res.json();
-    addAssistantMsg(data, Date.now() - t0);
+    addAssistantMsg(data, performance.now() - t0);
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -708,7 +493,7 @@ document.querySelectorAll('.chip').forEach(chip => {
   });
 });
 
-// ── Context reset ─────────────────────────────────────────────────
+// ── Conversation Reset ────────────────────────────────────────────
 
 btnReset.addEventListener('click', async () => {
   try {
@@ -719,28 +504,35 @@ btnReset.addEventListener('click', async () => {
     msgTotal = 0;
     msgCount.textContent = '0 messages';
     hideHUD();
-    toast('Conversation cleared');
-  } catch { toast('Reset failed', 'error'); }
+    toast('Conversation context reset');
+  } catch {
+    toast('Reset failed', 'error');
+  }
 });
 
-// ── Chat rendering ────────────────────────────────────────────────
+// ── Chat Rendering with RAG Grounding & Latency Pills ─────────────
 
 function addMsg(role, text) {
   welcomeCard.classList.add('hidden');
   const row = document.createElement('div');
   row.className = `msg-row ${role === 'user' ? 'user' : 'kaya'}`;
+
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   bubble.textContent = text;
+  row.appendChild(bubble);
+
   const meta = document.createElement('div');
   meta.className = 'msg-meta';
+
   const ts = document.createElement('span');
   ts.className = 'meta-time';
   ts.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   meta.appendChild(ts);
-  row.appendChild(bubble);
+
   row.appendChild(meta);
   convFeed.appendChild(row);
+
   msgTotal++;
   msgCount.textContent = `${msgTotal} message${msgTotal !== 1 ? 's' : ''}`;
   scrollDown();
@@ -752,21 +544,58 @@ function addAssistantMsg(data, elapsed) {
   const row = addMsg('kaya', text);
   const meta = row.querySelector('.msg-meta');
 
+  // Latency breakdown pills
   const t = data.timings || {};
-  [['STT', t.stt_ms], ['VLM', t.vision_ms], ['TTS', t.tts_ms]].forEach(([label, val]) => {
-    if (val == null) return;
+  if (t.rag_retrieval_ms != null && t.rag_retrieval_ms > 0) {
     const p = document.createElement('span');
-    p.className = 'lat-pill';
-    p.textContent = `${label}: ${Math.round(val)}ms`;
+    p.className = 'lat-pill rag';
+    p.textContent = `RAG: ${Math.round(t.rag_retrieval_ms)}ms`;
     meta.appendChild(p);
-  });
-  if (!t.stt_ms && !t.vision_ms && elapsed) {
+  }
+  if (t.vision_ms != null) {
     const p = document.createElement('span');
     p.className = 'lat-pill';
-    p.textContent = `${Math.round(elapsed)}ms`;
+    p.textContent = `VLM: ${Math.round(t.vision_ms)}ms`;
+    meta.appendChild(p);
+  }
+  if (t.tts_ms != null) {
+    const p = document.createElement('span');
+    p.className = 'lat-pill';
+    p.textContent = `TTS: ${Math.round(t.tts_ms)}ms`;
+    meta.appendChild(p);
+  }
+  if (t.total_turn_ms != null) {
+    const p = document.createElement('span');
+    p.className = 'lat-pill';
+    p.style.fontWeight = '700';
+    p.textContent = `Total: ${Math.round(t.total_turn_ms)}ms`;
     meta.appendChild(p);
   }
 
+  // RAG Sources Box if retrieved
+  const sources = data.rag_sources || data.sources || [];
+  if (data.rag_used && sources.length > 0) {
+    const sourcesBox = document.createElement('div');
+    sourcesBox.className = 'rag-sources-wrap';
+    sourcesBox.innerHTML = `
+      <div class="rag-sources-title">
+        <span>📖 Knowledge Base Grounding (${sources.length} sources)</span>
+      </div>
+      <div class="rag-source-list"></div>
+    `;
+    const listEl = sourcesBox.querySelector('.rag-source-list');
+    sources.forEach(src => {
+      const tag = document.createElement('span');
+      tag.className = 'rag-source-tag';
+      const title = typeof src === 'string' ? src : (src.title || src.document_name || 'Document');
+      const page = typeof src === 'object' && src.page ? ` (p.${src.page})` : '';
+      tag.textContent = `${title}${page}`;
+      listEl.appendChild(tag);
+    });
+    row.insertBefore(sourcesBox, meta);
+  }
+
+  // Audio synthesis & auto-playback
   const audiob64 = data.audio_base64;
   if (audiob64) {
     const getAudio = () => new Audio(`data:audio/wav;base64,${audiob64}`);
@@ -775,18 +604,19 @@ function addAssistantMsg(data, elapsed) {
     btn.textContent = '▶ Replay';
     btn.onclick = () => getAudio().play().catch(() => {});
     meta.appendChild(btn);
+
     showHUD('speaking');
     const audio = getAudio();
     audio.onended = hideHUD;
     audio.onerror = () => { console.warn('TTS error'); hideHUD(); };
-    audio.play().catch(err => { console.warn('TTS blocked:', err); hideHUD(); });
+    audio.play().catch(err => { console.warn('TTS auto-play blocked:', err); hideHUD(); });
   }
 
   scrollDown();
   return row;
 }
 
-// ── Toasts ────────────────────────────────────────────────────────
+// ── Toasts & Scrolling ────────────────────────────────────────────
 
 function toast(msg, type = 'default', ms = 3000) {
   const el = document.createElement('div');
@@ -802,6 +632,4 @@ function scrollDown() {
 
 // ── Init ──────────────────────────────────────────────────────────
 
-// Ensure initial view element is correct
-setActiveViewElement('all');
-videoFeed.src = `/api/video_feed?mode=all&t=${Date.now()}`;
+updateViewDisplay();

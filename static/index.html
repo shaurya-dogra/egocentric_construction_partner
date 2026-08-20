@@ -7,14 +7,7 @@
   <link rel="stylesheet" href="/static/styles.css" />
   <!-- Three.js for 3D pose viewer -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <!-- HuggingFace Transformers for browser-side WebGPU depth inference -->
-  <script type="importmap">
-  {
-    "imports": {
-      "@huggingface/transformers": "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.2/dist/transformers.min.js"
-    }
-  }
-  </script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 <body>
   <div class="app-container">
@@ -34,7 +27,7 @@
             <span class="brand-title">Kaya Copilot</span>
             <span class="live-dot"></span>
           </div>
-          <div class="brand-tagline">Real-Time Job Site Safety AI</div>
+          <div class="brand-tagline">Real-Time Job Site Safety AI & Knowledge Assistant</div>
         </div>
       </div>
 
@@ -47,6 +40,7 @@
           <span class="badge badge-vision"><span class="badge-dot"></span><span id="pillVisionLabel">Vision: Gemini</span></span>
           <span class="badge badge-stt"><span class="badge-dot"></span><span id="pillSTTLabel">STT: Gemini</span></span>
           <span class="badge badge-tts"><span class="badge-dot"></span><span id="pillTTSLabel">TTS: Sarvam</span></span>
+          <span class="badge badge-rag"><span class="badge-dot"></span><span id="pillRAGLabel">RAG: Docling</span></span>
         </div>
         <button class="btn-reset" id="btnReset">↺ Reset</button>
       </div>
@@ -55,16 +49,15 @@
     <!-- Main -->
     <main class="main-layout">
 
-      <!-- Left: Video -->
+      <!-- Left: Video & Computer Vision Telemetry -->
       <section class="video-panel">
         <div class="panel-header">
-          <span class="panel-title">Live Stream</span>
+          <span class="panel-title">Live Safety Vision Stream</span>
           <div class="stream-telemetry">
             <span class="tel-pill objects" id="telObjects">0 objects</span>
             <span class="tel-pill hazards" id="telHazards">0 hazards</span>
             <span class="tel-pill fps" id="telFps">-- fps</span>
-            <!-- Depth inference stats (shown only in depth mode) -->
-            <span class="tel-pill hidden" id="telDepthStats" style="color:#7c3aed;background:#faf5ff;border-color:#e9d5ff;">WebGPU Depth</span>
+            <span class="tel-pill depth-stat" id="telDepthStats" style="color:#7c3aed;background:#faf5ff;border-color:#e9d5ff;">Depth V2</span>
           </div>
         </div>
 
@@ -73,32 +66,25 @@
           <button class="view-tab active" data-mode="all">🎯 Combined</button>
           <button class="view-tab" data-mode="raw">📹 Normal</button>
           <button class="view-tab" data-mode="pose">👁️ 3D Pose</button>
-          <button class="view-tab" data-mode="depth">🌊 Depth</button>
+          <button class="view-tab" data-mode="depth">🌊 Depth Map</button>
           <button class="view-tab" data-mode="ppe">🦺 PPE</button>
           <button class="view-tab" data-mode="objects">🔨 Objects</button>
         </div>
 
-        <!-- Video stage — only one is visible at a time -->
+        <!-- Video stage -->
         <div class="video-viewport" id="videoViewport">
 
-          <!-- MJPEG stream (all / raw / ppe / objects modes) -->
+          <!-- Primary MJPEG stream (Combined / Normal / Depth / PPE / Objects / Pose) -->
           <img id="videoFeed" src="/api/video_feed?mode=all" class="stream-img" alt="Live stream" />
 
-          <!-- Browser-side WebGPU depth canvas (shown in depth mode) -->
-          <canvas id="depthCanvas" class="stream-img hidden" style="background:#000;"></canvas>
-          <!-- Loading state shown while depth model downloads -->
-          <div id="depthLoadingOverlay" class="hidden" style="
-            position:absolute;inset:0;background:rgba(0,0,0,0.85);
-            display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#fff;
-          ">
-            <div style="font-size:13px;font-weight:600;" id="depthLoadMsg">Initializing WebGPU Depth Pipeline...</div>
-            <div style="width:200px;height:4px;background:#333;border-radius:4px;overflow:hidden;">
-              <div id="depthProgressBar" style="height:100%;width:0%;background:#6366f1;transition:width 0.3s;"></div>
-            </div>
-          </div>
-
-          <!-- Three.js 3D pose canvas (shown in pose mode) -->
+          <!-- Interactive 3D Three.js Pose Canvas -->
           <canvas id="poseCanvas" class="stream-img hidden"></canvas>
+
+          <!-- Pose Sub-mode Toggle (shown in pose mode) -->
+          <div id="poseControls" class="pose-controls-bar hidden">
+            <button class="pose-sub-btn active" id="btnPoseStream">📹 Stream Overlay</button>
+            <button class="pose-sub-btn" id="btnPose3D">🌐 3D Spatial Canvas</button>
+          </div>
 
           <!-- HUD overlays -->
           <div class="video-hud">
@@ -109,34 +95,35 @@
         </div>
 
         <div class="video-footer">
-          <span class="engine-info" id="engineInfo">YOLO11 · YOLO-World · Depth Anything V2 · YOLO-Pose</span>
+          <span class="engine-info" id="engineInfo">YOLO26 · Depth Anything V2 · Docling RAG · Gemini VLM</span>
           <button class="btn-sm" id="btnReconnect">↺ Reconnect</button>
         </div>
       </section>
 
-      <!-- Right: Chat -->
+      <!-- Right: Copilot Chat & RAG Knowledge Retrieval -->
       <section class="chat-panel">
         <div class="chat-header">
-          <span class="panel-title">Ask Kaya</span>
+          <span class="panel-title">Kaya Safety Copilot</span>
           <span class="msg-count" id="msgCount">0 messages</span>
         </div>
 
         <div class="chips-bar">
           <button class="chip" data-query="Are all workers wearing hardhats and safety vests?">🦺 Check PPE</button>
-          <button class="chip" data-query="What tools and equipment are visible and how far are they?">🔨 Tool Distances</button>
+          <button class="chip" data-query="What are the ladder setup rules according to our safety manual?">🪜 Ladder SOP</button>
           <button class="chip" data-query="Are there any hazards or tripping risks in the area?">⚠️ Hazard Scan</button>
-          <button class="chip" data-query="Summarize what happened in the last few seconds.">🎞️ Temporal Summary</button>
+          <button class="chip" data-query="What does the documentation say about mobile crane operation?">🏗️ Crane Rules</button>
         </div>
 
         <div class="conv-feed" id="convFeed">
           <div class="welcome-card" id="welcomeCard">
             <div class="icon">🏗️</div>
             <h3>Kaya Safety Copilot</h3>
-            <p>Ask questions about the job site using voice or text.</p>
+            <p>Ask real-time questions about the job site or safety manuals using voice or text.</p>
             <div class="hints">
               <div class="hint-row">🎙️ Hold <kbd>Space</kbd> or click Push to Talk to speak</div>
-              <div class="hint-row">🌊 Depth tab runs live WebGPU inference in your browser</div>
-              <div class="hint-row">👁️ 3D Pose tab shows skeleton in a real 3D scene</div>
+              <div class="hint-row">📖 Knowledge Base queries auto-retrieve Docling SOP chunks</div>
+              <div class="hint-row">🌊 Depth Map tab renders real-time 3D metric distance gradients</div>
+              <div class="hint-row">👁️ 3D Pose tab visualizes posture angles & spatial joints</div>
             </div>
           </div>
         </div>
@@ -153,7 +140,7 @@
           </button>
 
           <form class="text-form" id="textForm">
-            <input type="text" class="text-input" id="textInput" placeholder="Ask about the job site..." autocomplete="off" />
+            <input type="text" class="text-input" id="textInput" placeholder="Ask about the job site or safety rules..." autocomplete="off" />
             <button type="submit" class="btn-send" id="btnSend">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="22" y1="2" x2="11" y2="13"/>

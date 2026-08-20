@@ -102,8 +102,53 @@ def get_tts_provider(settings: Settings) -> TTSProvider:
             api_key=settings.sarvam_api_key,
             model=settings.sarvam_tts_model,
             speaker=settings.sarvam_tts_speaker,
-            language_code=settings.sarvam_tts_language_code
+            language_code=settings.sarvam_tts_language_code,
+            pace=settings.sarvam_tts_pace,
         )
 
+
     raise ValueError(f"Unsupported TTS provider: '{settings.tts_provider}'")
+
+
+def get_knowledge_retriever(settings: Settings):
+    """Resolve and return the configured Knowledge Retriever (RAG)."""
+    if not settings.rag_enabled:
+        logger.info("RAG is disabled in settings.")
+        return None
+
+    provider_type = settings.rag_provider.lower()
+
+    if provider_type == "mock":
+        from app.providers.rag.mock_rag import MockKnowledgeRetriever
+        logger.info("Using Mock Knowledge Retriever.")
+        return MockKnowledgeRetriever()
+
+    if provider_type in ["docling", "vector", "local"]:
+        from app.providers.rag.docling_rag import DoclingVectorRetriever
+        if not settings.gemini_api_key:
+            logger.warning("GEMINI_API_KEY not configured. Docling vector RAG embeddings will not be available.")
+            return None
+        logger.info(f"Using Docling Structure-Aware Vector Retriever (Embedding: {settings.embedding_model}).")
+        return DoclingVectorRetriever(
+            api_key=settings.gemini_api_key,
+            embedding_model=settings.embedding_model,
+            store_path=settings.knowledge_vector_store_path,
+            default_top_k=settings.rag_top_k,
+        )
+
+    if provider_type in ["gemini", "gemini_file_search"]:
+        from app.providers.rag.gemini_rag import GeminiFileSearchRetriever
+        if not settings.gemini_api_key:
+            logger.warning("GEMINI_API_KEY not configured. Gemini RAG will not be available.")
+            return None
+        logger.info("Using Gemini File Search Knowledge Retriever.")
+        return GeminiFileSearchRetriever(
+            api_key=settings.gemini_api_key,
+            store_name=settings.gemini_file_search_store_name or None,
+            manifest_path=settings.knowledge_manifest_path,
+            knowledge_dir=settings.knowledge_dir,
+        )
+
+    raise ValueError(f"Unsupported RAG provider: '{settings.rag_provider}'")
+
 

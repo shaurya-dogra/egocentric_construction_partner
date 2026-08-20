@@ -59,8 +59,12 @@ class OllamaVisionReasoner(VisionReasoner):
         images: Any,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         mime_type: str = "image/jpeg",
+        file_search_store_name: Optional[str] = None,
+        system_instruction_override: Optional[str] = None,
+        **kwargs
     ) -> str:
         """Answer question based on image(s) using Ollama /api/chat."""
+
         if not question or not question.strip():
             question = "What am I looking at?"
 
